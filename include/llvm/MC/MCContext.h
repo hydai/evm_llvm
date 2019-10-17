@@ -65,6 +65,9 @@ namespace llvm {
   public:
     using SymbolTable = StringMap<MCSymbol *, BumpPtrAllocator &>;
 
+    /// The ConstantIntsPool reference getter
+    std::vector<ConstantInt *> &getConstantPool() { return ConstantIntsVector; }
+
   private:
     /// The SourceMgr for this object, if any.
     const SourceMgr *SrcMgr;
@@ -144,6 +147,9 @@ namespace llvm {
 
     /// The main file name if passed in explicitly.
     std::string MainFileName;
+
+    /// ConstantInt pool for EVM backend
+    std::vector<ConstantInt *> ConstantIntsVector;
 
     /// The dwarf file and directory tables from the dwarf .file directive.
     /// We now emit a line table for each compile unit. To reduce the prologue

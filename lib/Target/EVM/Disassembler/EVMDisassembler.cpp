@@ -23,6 +23,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/TargetRegistry.h"
 
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Type.h"
 
 using namespace llvm;
@@ -88,7 +89,9 @@ DecodeStatus EVMDisassembler::getInstruction(MCInst &Instr, uint64_t &Size,
         cimm = (cimm << 8) + Bytes[1 + i];
       }
 
-      Instr.addOperand(MCOperand::createCImm(ConstantInt::get(Ctx, cimm)));
+      //Instr.addOperand(MCOperand::createCImm(ConstantInt::get(Ctx, cimm)));
+      // TODO: change this.
+      Instr.addOperand(MCOperand::createImm(0));
     } else {
       uint64_t imm = 0;
       for (unsigned i = 0; i < length; ++i) {
