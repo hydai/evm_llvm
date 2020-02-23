@@ -199,7 +199,7 @@ unsigned EVMStackAlloc::getRegNumUses(unsigned reg) const {
 void EVMStackAlloc::handleDef(const MachineInstr &MI) {
   unsigned defReg = getDefRegister(MI);
 
-  // Rule out case: multiple defs:
+  // case: multiple defs:
   // if there are multiple defines, then it goes to memory
   if (!MRI->hasOneDef(defReg)) {
     currentStackStatus.M.insert(defReg);
@@ -275,7 +275,8 @@ bool EVMStackAlloc::liveIntervalWithinSameEdgeSet(unsigned defReg) {
 }
 
 void EVMStackAlloc::handleUses(const MachineInstr &MI) {
-  for (const MachineOperand &MOP : MI.uses()) {
+  // operate from back to front
+  for (const MachineOperand &MOP : reverse(MI.uses())) {
     handleSingleUse(MI, MOP);
   }
 }
@@ -322,7 +323,7 @@ void EVMStackAlloc::handleSingleUse(const MachineInstr &MI, const MachineOperand
 
     // * If it is not the last use in the same BB, dup it.
     // we only care about the last use in the BB, becuase only it matters
-    if (hasUsesAfterInBB(useReg, MI)) {
+    if (hasUsesAfterInSameBB(useReg, MI)) {
       // TODO
 
       llvm_unreachable("unimplemented");
@@ -390,8 +391,7 @@ unsigned EVMStackAlloc::allocateXRegion(unsigned setIndex, unsigned reg) {
   return x_region.size();
 }
 
-/*
-bool EVMStackAlloc::hasUsesAfterInBB(unsigned reg, const MachineInstr &MI) const {
+bool EVMStackAlloc::hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) const {
   const MachineBasicBlock* MBB = MI.getParent();
 
   // if this is the only use, then for sure it is the last use in MBB.
@@ -402,17 +402,26 @@ bool EVMStackAlloc::hasUsesAfterInBB(unsigned reg, const MachineInstr &MI) const
 
   // iterate over uses and see if any use exists in the same BB.
   for (MachineRegisterInfo::use_instr_nodbg_iterator
-           Use = MRI->use_instr_nodbg_begin(reg),
-           E = MRI->use_instr_nodbg_end();
+       Use = MRI->use_instr_nodbg_begin(reg),
+       E = MRI->use_instr_nodbg_end();
        Use != E; ++Use) {
-    // TODO     
-    llvm_unreachable("unimplemented");
+    MachineInstr &MI_USE = *Use;
+
+    MachineBasicBlock *MBB_USE = MI_USE.getParent();
+    if (MBB_USE != MBB) {
+      continue;
+    }
+
+    SlotIndex SI = LIS->getInstructionIndex(MI_USE);
+
+    // look for uses lie between [SI, EndOfMBB)
+    // TODO
+
   }
 
   // we cannot find a use after it in BB
   return false;
 }
-*/
 
 unsigned EVMStackAlloc::getCurrentStackDepth() const {
   return currentStackStatus.L.size() + currentStackStatus.X.size();
@@ -446,6 +455,7 @@ void EVMStackAlloc::getXStackRegion(unsigned edgeSetIndex,
   // order is important
   assert(edgeset2assignment.find(edgeSetIndex) != edgeset2assignment.end() &&
          "Cannot find edgeset index!");
-  std::copy(edgeset2assignment.begin(), edgeset2assignment.end(), xRegion);
+  llvm_unreachable("not implemented");
+  //std::copy(edgeset2assignment.begin(), edgeset2assignment.end(), xRegion);
   return;
 }

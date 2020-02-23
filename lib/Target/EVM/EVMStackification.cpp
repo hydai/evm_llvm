@@ -57,7 +57,9 @@ public:
 
   void instantiateXRegionStack(std::vector<unsigned> &stack) {
     assert(getStackDepth() == 0);
-    std::copy(stack.begin(), stack.end(), stackElements);
+    for (auto element : stack) {
+      stackElements.push_back(element);
+    }
     sizeOfXRegion = stack.size();
   }
 
@@ -161,6 +163,15 @@ private:
 
   void handleUses(StackStatus &ss, MachineInstr &MI);
   void handleDef(StackStatus &ss, MachineInstr &MI);
+
+  void handle2Uses(StackStatus &ss, MachineInstr &MI);
+
+  // last use: first, second 
+  void handle2UsesYY(StackStatus &ss, MachineInstr &MI);
+  void handle2UsesYN(StackStatus &ss, MachineInstr &MI);
+  void handle2UsesNY(StackStatus &ss, MachineInstr &MI);
+  void handle2UsesNN(StackStatus &ss, MachineInstr &MI);
+
   bool canStackifyReg(unsigned reg, MachineInstr &MI) const;
   unsigned findNumOfUses(unsigned reg) const;
 
@@ -351,7 +362,7 @@ void EVMStackification::bringOperandToTop(StackStatus &ss, unsigned depth,
   assert(depth <= 16);
 
   for (unsigned i = 1; i <= depth; ++i) {
-    insertSwap(i, MI);
+    insertSwapBefore(i, MI, ss);
     ss.swap(i);
   }
 }
@@ -382,9 +393,7 @@ void EVMStackification::handleIrregularInstruction(StackStatus &ss,
     } else {
       LLVM_DEBUG(dbgs() << "  Operand is stackified: "; MO.dump());
       // stackified case:
-      unsigned depthFromTop = 0;
-      bool result = findRegDepthOnStack(ss, reg, &depthFromTop);
-      assert(result);
+      unsigned depthFromTop = findRegDepthOnStack(ss, reg);
 
       bringOperandToTop(ss, depthFromTop, MI);
     }
@@ -400,7 +409,9 @@ bool EVMStackification::isLastUse(MachineOperand &MO) const {
   assert(MO.isReg() && "Operand my be a register");
   unsigned useReg = MO.getReg();
 
-  // unfortunately, the <kill> flag is optional.
+  // unfortunately, the <kill> flag is conservative, when <kill> is set, it is
+  // true. so we have to do some other tricks to make sure we do not miss killed
+  // registers.
   if (MO.isKill()) {
     return true;
   }
@@ -412,8 +423,10 @@ bool EVMStackification::isLastUse(MachineOperand &MO) const {
   // It is not the last use in current MBB:
   SlotIndex MBBEndIndex = LIS->getMBBEndIdx(MBB);
   SlotIndex regSI = LIS->getInstructionIndex(*MI);
-  if (LI.find(regSI)) {
 
+  // 
+  if (LI.find(regSI) != LI.end()) {
+    
   }
 
   // If it is the last use of this MBB, then make sure:
@@ -428,7 +441,9 @@ bool EVMStackification::isLastUse(MachineOperand &MO) const {
   return true;
 }
 
+void EVMStackification::handle2Uses(StackStatus &ss, MachineInstr& MI) {
 
+}
 
 void EVMStackification::handleUses(StackStatus &ss, MachineInstr& MI) {
 
@@ -440,25 +455,21 @@ void EVMStackification::handleUses(StackStatus &ss, MachineInstr& MI) {
     }
   }
 
-   std::distance(MI.uses.begin(), MI.uses.end());
-  for (MachineOperand& MO : reverse(MI.uses())) {
-    // skip non-register operands
-    if (!MO.isReg()) {
-      continue;
-    }
-
+  if (numUsesInMI == 1) {
+    // get first operand
+    MachineOperand &MO = *MI.uses().begin();
     unsigned useReg = MO.getReg();
     StackAssignment sa = ESA->getStackAssignment(useReg);
 
     switch (sa.region) {
-      default:
-      llvm_unreachable("Impossible switch.");
-      break;
+      default: {
+        llvm_unreachable("Impossible switch.");
+        break;
+      }
       case X_STACK:
-      case L_STACK:
-      llvm_unreachable("Impossible path.");
-
-      if (numUsesInMI == 1) {
+      case L_STACK: {
+        // it is fairly straightforward for the case of only use consuming
+        // operand
         unsigned depth = findRegDepthOnStack(ss, useReg);
         if (depth != 0) {
           if (isLastUse(MO)) {
@@ -467,290 +478,78 @@ void EVMStackification::handleUses(StackStatus &ss, MachineInstr& MI) {
             insertDupBefore(depth, MI, ss);
           }
         }
+        break;
       }
-      
-      // if 
-      break;
-      case NONSTACK:
-      unsigned slot = sa.memorySlot;
-      insertLoadFromMemoryBefore(useReg, MI, slot);
-      break;
-    }
-
-  }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  // TODO: do not support more than 2 uses in an MI. We need scheduler to help
-  // us make sure that the registers are on stack top.
-  const auto &uses = MI.uses();
-  unsigned numUsesInMI = 0;
-
-  if (MI.isPseudo()){
-    // PUTLOCAL and GETLOCAL will have their constant value at the back
-    // find actual num uses:
-    for (const MachineOperand &MO : uses) {
-      if (MO.isReg()) {
-        numUsesInMI++;
+      case NONSTACK: {
+        unsigned slot = sa.memorySlot;
+        insertLoadFromMemoryBefore(useReg, MI, slot);
+        break;
       }
     }
-  } else {
-    numUsesInMI = std::distance(uses.begin(), uses.end());
-  }
-
-
-  // Case 1: only 1 use
-  if (numUsesInMI == 1) {
-    MachineOperand& MO = *MI.uses().begin(); 
-    if (!MO.isReg()) {
-      return;
-    }
-    unsigned reg = MO.getReg();
-
-    // handle vreg unstackfied case
-    if (!MFI->isVRegStackified(reg)) {
-      LLVM_DEBUG(dbgs() << "  Operand is not stackified.\n";);
-      insertLoadFromMemoryBefore(reg, MI);
-      ss.push(reg);
-    } else {
-
-      // handle vreg stackified case
-      unsigned depthFromTop = 0;
-      bool result = findRegDepthOnStack(ss, reg, &depthFromTop);
-      assert(result);
-      LLVM_DEBUG(dbgs() << "  Operand is on the stack at depth: "
-                        << depthFromTop << "\n";);
-
-      // check if it is on top of the stack.
-      if (depthFromTop != 0) {
-        // TODO: insert swap
-        insertSwap(depthFromTop, MI);
-        ss.swap(depthFromTop);
-      }
-    }
-
-    ss.pop();
     return;
   }
 
   if (numUsesInMI == 2) {
-    MachineOperand& MO1 = *MI.uses().begin(); 
-    MachineOperand& MO2 = *(MI.uses().begin() + 1); 
+    MachineOperand &MO1 = *MI.uses().begin();
+    MachineOperand &MO2 = *(MI.uses().begin() + 1);
 
     assert(MO1.isReg() && MO2.isReg());
 
     unsigned firstReg  = MO1.getReg();
     unsigned secondReg = MO2.getReg();
+    StackAssignment fa = ESA->getStackAssignment(firstReg);
+    StackAssignment sa = ESA->getStackAssignment(secondReg);
 
-    bool firstStackified = MFI->isVRegStackified(firstReg);
-    bool secondStackified = MFI->isVRegStackified(secondReg);
+    // move the memory allocated variable to stack if needed
+    unsigned shouldSwapFirst  = isLastUse(MO1);
+    unsigned shouldSwapSecond = isLastUse(MO2);
 
-    // case 1: both regs are not stackified:
-    if (!firstStackified && !secondStackified) {
-      insertLoadFromMemoryBefore(secondReg, MI);
-      ss.push(secondReg);
+    if (sa.region == NONSTACK) {
+      unsigned slot = sa.memorySlot;
+      insertLoadFromMemoryBefore(secondReg, MI, slot);
+      shouldSwapFirst = true;
+    }
 
-      insertLoadFromMemoryBefore(firstReg, MI);
-      ss.push(firstReg);
+    if (fa.region == NONSTACK) {
+      unsigned slot = sa.memorySlot;
+      insertLoadFromMemoryBefore(firstReg, MI, slot);
+      shouldSwapSecond = true;
+    }
 
-      ss.pop();
-      ss.pop();
+    // now check step depth
+    unsigned fd = findRegDepthOnStack(ss, firstReg);
+    unsigned sd = findRegDepthOnStack(ss, secondReg);
+
+    // shortcut
+    if (fd == 0 && sd == 1) {
       return;
     }
 
-    // case 2: the first reg is not stackified:
-    if (!firstStackified && secondStackified) {
-      unsigned depthFromTop = 0;
-      bool result = findRegDepthOnStack(ss, secondReg, &depthFromTop);
-      assert(result);
-
-      // swap second reg to top, thend load first reg
-      if (depthFromTop != 0) {
-        insertSwap(depthFromTop, MI);
-        ss.swap(depthFromTop);
+    // second is not in place, and is swappable
+    if (sd != 1) {
+      if (shouldSwapSecond) {
+        insertSwapBefore(sd, MI, ss);
+      } else {
+        // should dup
+        insertDupBefore(sd, MI, ss);
       }
-
-      insertLoadFromMemoryBefore(firstReg, MI);
-      ss.push(firstReg);
-
-      ss.pop();
-      ss.pop();
-      return;
+      assert(findRegDepthOnStack(ss, firstReg) == 1 && "incompatible results.");
+      insertSwapBefore(1, MI, ss);
     }
 
-    // case 3: the second reg is not stackfieid:
-    if (firstStackified && !secondStackified) {
-      unsigned depthFromTop = 0;
-      bool result = findRegDepthOnStack(ss, firstReg, &depthFromTop);
-      assert(result);
-
-      // 1: bring a to top
-      // 2: load b
-      // 3: swap1
-      if (depthFromTop != 0) {
-        insertSwap(depthFromTop, MI);
-        ss.swap(depthFromTop);
+    // first is not in place, and second is
+    if (fd != 0) {
+      if (shouldSwapFirst) {
+        insertSwapBefore(fd, MI, ss);
+      } else {
+        // bring second in place first,
+        insertSwapBefore(1, MI, ss);
+        // then duplicate first.
+        insertDupBefore(fd, MI, ss);
       }
-
-      insertLoadFromMemoryBefore(secondReg, MI);
-      ss.push(secondReg);
-
-      insertSwap(1, MI);
-      ss.swap(1);
-
-      ss.pop();
-      ss.pop();
-      return;
     }
 
-    // case 4: both reg is stackified:
-    unsigned firstDepthFromTop = 0;
-    unsigned secondDepthFromTop = 0;
-    bool result = findRegDepthOnStack(ss, firstReg, &firstDepthFromTop);
-    assert(result);
-
-    // there is a special case: both the operands are the same.
-    if (firstReg == secondReg) {
-      LLVM_DEBUG(
-          { dbgs() << "  Special case: both operands are the same.\n"; });
-      //we should skip the first one and find the second one.
-      result = findRegDepthOnStack(ss, secondReg, &secondDepthFromTop,
-                                   /*skip = */ 1);
-    } else {
-      result = findRegDepthOnStack(ss, secondReg, &secondDepthFromTop);
-    }
-    assert(result);
-
-    // ideal case, we don't need to do anything
-    if (firstDepthFromTop == 0 && secondDepthFromTop == 1) {
-      LLVM_DEBUG({ dbgs() << "  case1.\n"; });
-      // do nothing
-    } else
-    
-    // first in position, second not in.
-    if (firstDepthFromTop == 0 && secondDepthFromTop != 1) {
-      LLVM_DEBUG({ dbgs() << "  case2.\n"; });
-      // TODO: do if it is commutatble, optimization
-
-      // 0: start:  a, xx, xx1, b
-      // 1: swap(b, a): b, xx, xx1, a
-      // 2: swap(b, xx):  xx, b, xx1, a
-      // 3: swap(a, xx): a, b, xx1, xx
-
-      // move the second operand to top, so a swap
-      insertSwap(secondDepthFromTop, MI);
-      ss.swap(secondDepthFromTop);
-
-      // and another swap1 to swap the fst and snd operands
-      insertSwap(1, MI);
-      ss.swap(1);
-
-      result = findRegDepthOnStack(ss, firstReg, &firstDepthFromTop);
-      assert(result);
-
-      if (firstDepthFromTop != 0) {
-        insertSwap(firstDepthFromTop, MI);
-        ss.swap(firstDepthFromTop);
-      }
-    } else 
-
-    // second in position, first is not.
-    if (firstDepthFromTop != 0 && secondDepthFromTop == 1) {
-      LLVM_DEBUG({ dbgs() << "  case3.\n"; });
-
-      // before:
-      // x, b, ..., a 
-      // after swap(x):
-      // a, b, ..., x
-
-      insertSwap(firstDepthFromTop, MI);
-      ss.swap(firstDepthFromTop);
-    } else
-
-    // first and second are reversed
-    if (firstDepthFromTop == 1 && secondDepthFromTop == 0) {
-      LLVM_DEBUG({ dbgs() << "  case4.\n"; });
-      insertSwap(1, MI);
-      ss.swap(1);
-    } else
-
-    // special case: 
-    /*
-    if (firstDepthFromTop == 0 && secondDepthFromTop > 1) {
-      LLVM_DEBUG({ dbgs() << "  case5.\n"; });
-      // move the first operand to the correct position.
-      insertSwap(1, MI);
-      ss.swap(1);
-      
-      // then move the second operand on to the top
-      insertSwap(secondDepthFromTop, MI);
-      ss.swap(secondDepthFromTop);
-    } else
-    */
-    
-    // all other situations.
-    if (firstDepthFromTop != 0 && secondDepthFromTop != 1) {
-      LLVM_DEBUG({ dbgs() << "  case6.\n"; });
-      // either registers are not in place.
-      // first, swap first operand to top, then swap second operand to top
-
-      // 1: move b to top: b, c, ..., a
-      // 2: swap b and c:  c, b, ..., a
-      // 3: if c is a: then doen.
-      // 4: otherwise: swap c and a
-
-      if (secondDepthFromTop != 0) {
-        insertSwap(secondDepthFromTop, MI);
-        ss.swap(secondDepthFromTop);
-      }
-
-      insertSwap(1, MI);
-      ss.swap(1);
-
-      result = findRegDepthOnStack(ss, firstReg, &firstDepthFromTop);
-      assert(result);
-      // first operand cannot be second
-      assert(firstDepthFromTop != 1);
-
-      if (firstDepthFromTop != 0) {
-        insertSwap(firstDepthFromTop, MI);
-        ss.swap(firstDepthFromTop);
-      }
-
-    } else{
-      llvm_unreachable("missing cases for handling.");
-    }
-
-    ss.pop();
-    ss.pop();
-    return;
+    // first and second not in place
   }
 
   LLVM_DEBUG({
@@ -783,22 +582,26 @@ void EVMStackification::handleDef(StackStatus &ss, MachineInstr& MI) {
     default:
       llvm_unreachable("Impossible path");
       break;
-    case NO_ALLOCATION:
+    case NO_ALLOCATION: {
       assert(MRI->use_empty(defReg));
       insertPop(MI, ss);
       break;
-    case X_STACK:
+    }
+    case X_STACK: {
       unsigned x_slot = sa.stackSlot;
       // we should ensure that the order is the same as the result of
       // analysis
       llvm_unreachable("unimplemented");
       break;
-    case L_STACK:
+    }
+    case L_STACK: {
       llvm_unreachable("unimplemented");
       break;
-    case NONSTACK:
+    }
+    case NONSTACK: {
       insertStoreToMemoryAfter(defReg, MI, sa.memorySlot);
       break; 
+    }
   }
 }
 
@@ -854,9 +657,7 @@ void EVMStackification::handleEntryMBB(StackStatus &ss, MachineBasicBlock &MBB) 
     for (unsigned index = 0; index < canStackifyStackarg.size();  ++index) {
       Sarg pos = canStackifyStackarg[index];
 
-      unsigned depth = 0;
-      bool found = findRegDepthOnStack(ss, pos.reg, &depth);
-      assert(found);
+      unsigned depth = findRegDepthOnStack(ss, pos.reg);
 
       LLVM_DEBUG({
         unsigned ridx = Register::virtReg2Index(pos.reg);
@@ -871,11 +672,11 @@ void EVMStackification::handleEntryMBB(StackStatus &ss, MachineBasicBlock &MBB) 
 
         for (unsigned i = 1; i < numUses; ++i) {
           if (i == 1) {
-            insertDup(depth + 1, MI, false);
+            insertDupBefore(depth + 1, MI, ss);
             ss.dup(depth); 
           } else {
             // dup the top
-            insertDup(1, MI, false);
+            insertDupBefore(1, MI, ss);
             ss.dup(0);
           }
         }
@@ -888,7 +689,7 @@ void EVMStackification::handleEntryMBB(StackStatus &ss, MachineBasicBlock &MBB) 
         if (depth != 0) {
           // We can't stackify it:
           // SWAP and then store.
-          insertSwap(depth, MI);
+          insertSwapBefore(depth, MI, ss);
           ss.swap(depth);
         }
 
@@ -940,7 +741,7 @@ void EVMStackification::reconstructStackStatus(StackStatus &ss, MachineBasicBloc
   std::vector<unsigned> xRegion;
 
   EdgeSets::Edge edge = {*MBB.predecessors().begin(), &MBB};
-  unsigned ESIndex = ESA->getEdgeSets.getEdgeSetIndex(edge);
+  unsigned ESIndex = ESA->getEdgeSets().getEdgeSetIndex(edge);
   ESA->getXStackRegion(ESIndex, xRegion);
 
   ss.instantiateXRegionStack(xRegion);

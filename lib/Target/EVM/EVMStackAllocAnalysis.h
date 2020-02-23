@@ -28,10 +28,10 @@
 namespace llvm {
 
 typedef enum {
-  X_STACK,       // transfer
-  L_STACK,       // local
-  NONSTACK,      // allocate on memory
-  NO_ALLOCATION, // do not allocate
+  NONSTACK      = 0x00,  // allocate on memory
+  X_STACK       = 0x01,  // transfer
+  L_STACK       = 0x02,  // local
+  NO_ALLOCATION = 0x04,  // do not allocate
 } StackRegion;
 
 // We also assign a memory slot
@@ -170,7 +170,7 @@ private:
 
   unsigned allocateXRegion(unsigned setIndex, unsigned reg);
 
-  bool hasUsesAfterInBB(unsigned reg, const MachineInstr &MI) const;
+  bool hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) const;
 
   // test if we should spill some registers to memory
   unsigned getCurrentStackDepth() const; 
