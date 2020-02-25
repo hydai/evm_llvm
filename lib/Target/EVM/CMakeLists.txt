@@ -36,6 +36,7 @@ add_llvm_target(EVMCodeGen
   EVMFinalization.cpp
   EVMStackAllocAnalysis.cpp
   EVMUtils.cpp
+  EVMStackStatus.cpp
   )
 
 

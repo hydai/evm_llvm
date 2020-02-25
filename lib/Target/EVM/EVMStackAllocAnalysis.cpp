@@ -434,7 +434,7 @@ void EVMStackAlloc::pruneStackDepth() {
   }
   LLVM_DEBUG(dbgs() << "Stack Depth exceeds maximum, start pruning.");
 
-  // First look at transfer stack:
+  // First look at transfer stackœ:
   unsigned spillingCandidate = 0;
   std::set<unsigned> *vecRegs;
   if (currentStackStatus.X.size() != 0) {
