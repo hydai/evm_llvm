@@ -114,9 +114,9 @@ void EVMPassConfig::addPreEmitPass() {
   addPass(createEVMExpandFramePointer());
 
   if (getOptLevel() != CodeGenOpt::None) {
-    addPass(createEVMPrepareStackification());
+    //addPass(createEVMPrepareStackification());
     // This is the major pass we will use to stackify registers
-    addPass(createEVMStackification());
+    addPass(createEVMStackAllocPass());
   } else {
     // In this pass we assign un-stackified registers
     // with an explicit memory location for storage.

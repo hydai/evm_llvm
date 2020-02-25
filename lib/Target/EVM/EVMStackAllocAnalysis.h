@@ -37,10 +37,8 @@ typedef enum {
 // We also assign a memory slot
 typedef struct StackAssignment_ {
   StackRegion region;
-  unsigned numUses;
   // For memory allocation
-  unsigned memorySlot;
-  unsigned stackSlot;
+  unsigned slot;
 } StackAssignment;
 
 // The stack arrangement is as follows:
@@ -85,14 +83,14 @@ private:
   void mergeEdgeSets(Edge edge1, Edge edge2);
 };
 
-class EVMStackAlloc : public ImmutablePass {
+class EVMStackAlloc : public MachineFunctionPass {
 public:
   static char ID;
 
   // TODO: 15 is a bit arbitrary:
   static const unsigned MAXIMUM_STACK_DEPTH = 15;
 
-  EVMStackAlloc() : ImmutablePass(ID) {
+  EVMStackAlloc() : MachineFunctionPass(ID) {
     initializeEVMStackAllocPass(*PassRegistry::getPassRegistry());
   }
 
@@ -101,8 +99,6 @@ public:
   void allocateRegistersToStack(MachineFunction &F);
 
   StackAssignment getStackAssignment(unsigned reg) const;
-
-  bool runOnModule(Module &M) override;
 
   unsigned getNumOfAllocatedMemorySlots() const {
     return memoryAssignment.size();
@@ -126,6 +122,7 @@ private:
   } StackStatus;
 
   LiveIntervals *LIS;
+  const EVMInstrInfo *TII;
   MachineFunction *F;
   MachineRegisterInfo *MRI;
 
@@ -135,6 +132,10 @@ private:
   // record assignments of each virtual register 
   DenseMap<unsigned, StackAssignment> regAssignments;
   StackStatus currentStackStatus;
+
+  // This is used to find stack locations
+  evm::EVMStackStatus stack;
+
   std::vector<unsigned> memoryAssignment;
 
   // map: edgeset -> Stack Assignment
@@ -145,17 +146,17 @@ private:
   // the pass to analyze a single basicblock
   void analyzeBasicBlock(MachineBasicBlock *MBB);
 
-  void handleDef(const MachineInstr &MI);
-  void handleUses(const MachineInstr &MI);
+  void handleDef(MachineInstr &MI);
+  void handleUses(MachineInstr &MI);
 
   // handle a single use in the specific machine instruction. 
-  void handleSingleUse(const MachineInstr &MI, const MachineOperand &MOP);
+  void handleSingleUse(MachineInstr &MI, const MachineOperand &MOP);
 
   // if the def and use is within a single BB
   bool defIsLocal(const MachineInstr &MI) const;
 
   // return true if the use in the specific MI is the last use of a reg
-  bool regIsLastUse(const MachineInstr &MI, unsigned reg) const;
+  bool regIsLastUse(const MachineOperand &MOP) const;
 
   // return numbers of uses of a register.
   unsigned getRegNumUses(unsigned reg) const;
@@ -171,6 +172,7 @@ private:
   unsigned allocateXRegion(unsigned setIndex, unsigned reg);
 
   bool hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) const;
+  bool successorsHaveUses(unsigned useReg, const MachineInstr &MI) const;
 
   // test if we should spill some registers to memory
   unsigned getCurrentStackDepth() const; 
@@ -179,6 +181,16 @@ private:
   unsigned findSpillingCandidate(std::set<unsigned> &vecRegs) const;
 
   bool liveIntervalWithinSameEdgeSet(unsigned def);
+
+  // Stack manipulation operations
+  void insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI, unsigned memSlot);
+  void insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, unsigned memSlot);
+  void insertDupBefore(unsigned index, MachineInstr &MI);
+  void insertSwapBefore(unsigned index, MachineInstr &MI);
+  void insertPopAfter(MachineInstr &MI);
+
+
+  bool runOnMachineFunction(MachineFunction &MF) override;
 };
 
 } // end namespace llvm

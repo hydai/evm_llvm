@@ -15,11 +15,12 @@
 
 #include <vector>
 
+using namespace llvm;
 namespace evm {
 
-class StackStatus {
+class EVMStackStatus {
 public:
-  StackStatus() {}
+  EVMStackStatus() {}
 
   void swap(unsigned depth);
   void dup(unsigned depth);
@@ -35,6 +36,8 @@ public:
   unsigned getSizeOfLRegion() const {
     return getStackDepth() - sizeOfXRegion;
   }
+
+  unsigned findRegDepth(unsigned reg) const;
 
   // Stack depth = size of X + size of L
   unsigned getStackDepth() const;

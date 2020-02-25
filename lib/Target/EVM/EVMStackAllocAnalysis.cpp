@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "EVM.h"
+#include "EVMStackStatus.h"
 #include "EVMStackAllocAnalysis.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
@@ -134,7 +135,7 @@ void EVMStackAlloc::initialize() {
 
 void EVMStackAlloc::allocateRegistersToStack(MachineFunction &F) {
     // clean up previous assignments.
-    initializePass();
+    initialize();
 
     // compute edge sets
     edgeSets.computeEdgeSets(&F);
@@ -172,9 +173,10 @@ bool EVMStackAlloc::defIsLocal(const MachineInstr &MI) const {
 }
 
 void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
-  // Iterate over the instructions in the basic block.
-  for (MachineInstr &MI : *MBB) {
+  for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;) {
+    MachineInstr &MI = *I++;
     handleDef(MI);
+    handleUses(MI);
   }
 }
 
@@ -185,8 +187,10 @@ StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
 }
 
 // return true of the register use in the machine instruction is the last use.
-bool EVMStackAlloc::regIsLastUse(const MachineInstr &MI, unsigned reg) const {
-  llvm_unreachable("unimplemented");
+bool EVMStackAlloc::regIsLastUse(const MachineOperand &MOP) const {
+  if (MOP.isKill()) return true;
+
+  // TODO: `isKill` might not be 100% accurate.
   return false;
 }
 
@@ -196,52 +200,60 @@ unsigned EVMStackAlloc::getRegNumUses(unsigned reg) const {
   return 0;
 }
 
-void EVMStackAlloc::handleDef(const MachineInstr &MI) {
+void EVMStackAlloc::handleDef(MachineInstr &MI) {
   unsigned defReg = getDefRegister(MI);
+
+  // TODO: insert to SA
+  StackAssignment sa;
 
   // case: multiple defs:
   // if there are multiple defines, then it goes to memory
-  if (!MRI->hasOneDef(defReg)) {
+  if (MRI->hasOneDef(defReg)) {
+    // if the register has no use, then we do not allocate it
+    if (MRI->use_nodbg_empty(defReg)) {
+      regAssignments.insert(std::pair<unsigned, StackAssignment>(
+          defReg, {NO_ALLOCATION, 0}));
+      // TODO insert pop after this instruction.
+      llvm_unreachable("Need to implement insert pop after it.");
+      return;
+    }
+
+    // LOCAL case
+    if (defIsLocal(MI)) {
+      // record assignment
+      regAssignments.insert(
+          std::pair<unsigned, StackAssignment>(defReg, {L_STACK, 0}));
+      // update stack status
+      currentStackStatus.L.insert(defReg);
+      stack.push(defReg);
+      return;
+    }
+
+    // If all uses are in a same edge set, send it to Transfer Stack
+    // This could greatly benefit from a stack machine specific optimization.
+    if (liveIntervalWithinSameEdgeSet(defReg)) {
+      // it is a def register, so we only care about out-going edges.
+
+      // TODO: allocate X regions to the following code
+      MachineBasicBlock *ThisMBB = const_cast<MachineInstr &>(MI).getParent();
+
+      // find the outgoing edge set.
+      assert(!ThisMBB->succ_empty() &&
+             "Cannot allocate XRegion to empty edgeset.");
+      unsigned edgesetIndex =
+          edgeSets.getEdgeSetIndex({ThisMBB, *(ThisMBB->succ_begin())});
+      allocateXRegion(edgesetIndex,defReg);
+
+      stack.push(defReg);
+      return;
+    }
+  } else {
+    // Everything else goes to memory
+    insertStoreToMemoryAfter(defReg, MI, sa.slot);
     currentStackStatus.M.insert(defReg);
     allocateMemorySlot(defReg);
     return;
   }
-
-  // if the register has no use, then we do not allocate it
-  if (MRI->use_nodbg_empty(defReg)) {
-    regAssignments.insert(
-        std::pair<unsigned, StackAssignment>(defReg, {NO_ALLOCATION, 0}));
-    return;
-  }
-
-  // LOCAL case
-  if (defIsLocal(MI)) {
-    // record assignment
-    regAssignments.insert(
-        std::pair<unsigned, StackAssignment>(defReg, {L_STACK, 0}));
-    // update stack status
-    currentStackStatus.L.insert(defReg); 
-    return;
-  } 
-
-  // If all uses are in a same edge set, send it to Transfer Stack
-  // This could greatly benefit from a stack machine specific optimization.
-  if (liveIntervalWithinSameEdgeSet(defReg)) {
-    // it is a def register, so we only care about out-going edges.
-
-    MachineBasicBlock* ThisMBB = const_cast<MachineInstr&>(MI).getParent(); 
-    for (MachineBasicBlock *NextMBB : ThisMBB->successors()) {
-      EdgeSets::Edge edge = {ThisMBB, NextMBB};
-      unsigned edgeIndex = edgeSets.getEdgeIndex(edge);
-      allocateXRegion(edgeIndex, defReg);
-    }
-    return;
-  }
-
-  // Everything else goes to memory
-  currentStackStatus.M.insert(defReg);
-  allocateMemorySlot(defReg);
-  return; 
 }
 
 // We only look at uses.
@@ -274,14 +286,59 @@ bool EVMStackAlloc::liveIntervalWithinSameEdgeSet(unsigned defReg) {
   }
 }
 
-void EVMStackAlloc::handleUses(const MachineInstr &MI) {
-  // operate from back to front
-  for (const MachineOperand &MOP : reverse(MI.uses())) {
+void EVMStackAlloc::handleUses(MachineInstr &MI) {
+  for (const MachineOperand &MOP : MI.explicit_uses()) {
     handleSingleUse(MI, MOP);
   }
+  // TODO: rearrange stack order.
 }
 
-void EVMStackAlloc::handleSingleUse(const MachineInstr &MI, const MachineOperand &MOP) {
+void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
+                                               unsigned memSlot) {
+  LLVM_DEBUG(dbgs() << "  %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
+                    << memSlot << ") inserted.\n");
+
+  BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::pGETLOCAL_r), reg)
+      .addImm(memSlot);
+}
+
+void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
+  MachineBasicBlock *MBB = MI.getParent();
+  MachineFunction &MF = *MBB->getParent();
+  MachineInstrBuilder dup = BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::DUP_r)).addImm(index);
+  MBB->insert(MachineBasicBlock::iterator(MI), dup);
+  stack.dup(index);
+}
+
+void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, unsigned memSlot) {
+  MachineBasicBlock *MBB = MI.getParent();
+  MachineFunction &MF = *MBB->getParent();
+
+  MachineInstrBuilder putlocal =
+      BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::pPUTLOCAL_r)).addReg(reg).addImm(memSlot);
+  MBB->insertAfter(MachineBasicBlock::iterator(MI), putlocal);
+  LLVM_DEBUG(dbgs() << "  PUTLOCAL(" << memSlot << ") => %" << memSlot
+                    << "  is inserted.\n");
+}
+
+void EVMStackAlloc::insertPopAfter(MachineInstr &MI) {
+  MachineBasicBlock *MBB = MI.getParent();
+  MachineFunction &MF = *MBB->getParent();
+  MachineInstrBuilder pop = BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::POP_r));
+  MBB->insertAfter(MachineBasicBlock::iterator(MI), pop);
+  stack.pop();
+}
+
+void EVMStackAlloc::insertSwapBefore(unsigned index, MachineInstr &MI) {
+  MachineBasicBlock *MBB = MI.getParent();
+  MachineInstrBuilder swap =
+      BuildMI(*MBB->getParent(), MI.getDebugLoc(), TII->get(EVM::SWAP_r))
+          .addImm(index);
+  MBB->insert(MachineBasicBlock::iterator(MI), swap);
+  stack.swap(index);
+}
+
+void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP) {
   if (!MOP.isReg()) {
     return;
   }
@@ -297,21 +354,24 @@ void EVMStackAlloc::handleSingleUse(const MachineInstr &MI, const MachineOperand
   }
 
   // update stack status if it is the last use.
-  if (regIsLastUse(MI, useReg)) {
+  if (regIsLastUse(MOP)) {
     switch (SA.region) {
       case NONSTACK: {
         // release memory slot
+        insertLoadFromMemoryBefore(useReg, MI, SA.slot);
         currentStackStatus.M.erase(useReg);
         deallocateMemorySlot(useReg);
         break;
       }
       case X_STACK: {
+        unsigned depth = stack.findRegDepth(useReg);
+        insertSwapBefore(depth, MI);
         currentStackStatus.X.erase(useReg);
-        // TODO
         break;
       }
       case L_STACK: {
-        // TODO
+        unsigned depth = stack.findRegDepth(useReg);
+        insertSwapBefore(depth, MI);
         break;
       }
       default: {
@@ -320,35 +380,13 @@ void EVMStackAlloc::handleSingleUse(const MachineInstr &MI, const MachineOperand
       }
     }
   } else { // It is not the last use of a register.
+    assert(hasUsesAfterInSameBB(useReg, MI) || successorsHaveUses(useReg, MI));
 
     // * If it is not the last use in the same BB, dup it.
     // we only care about the last use in the BB, becuase only it matters
-    if (hasUsesAfterInSameBB(useReg, MI)) {
-      // TODO
-
-      llvm_unreachable("unimplemented");
-      return;
-    }
-
-    // * If each sucessor path has at least a use, dup it.
-    switch (SA.region) {
-      case NONSTACK: {
-        // If it is a memory variable, we can simply ignore it.
-        // do nothing
-        break;
-      }
-      case X_STACK: {
-        break;
-      }
-      case L_STACK: {
-        break;
-      }
-      default: {
-        llvm_unreachable("Impossible case");
-        break;
-      }
-    }
-    llvm_unreachable("unimplemented");
+    unsigned depth = stack.findRegDepth(useReg);
+    insertDupBefore(depth, MI);
+    return;
   }
 }
 
@@ -412,7 +450,7 @@ bool EVMStackAlloc::hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) c
       continue;
     }
 
-    SlotIndex SI = LIS->getInstructionIndex(MI_USE);
+    //SlotIndex SI = LIS->getInstructionIndex(MI_USE);
 
     // look for uses lie between [SI, EndOfMBB)
     // TODO
@@ -458,4 +496,18 @@ void EVMStackAlloc::getXStackRegion(unsigned edgeSetIndex,
   llvm_unreachable("not implemented");
   //std::copy(edgeset2assignment.begin(), edgeset2assignment.end(), xRegion);
   return;
+}
+
+bool EVMStackAlloc::runOnMachineFunction(MachineFunction &MF) {
+  TII = MF.getSubtarget<EVMSubtarget>().getInstrInfo(); 
+  allocateRegistersToStack(MF);
+  return true;
+}
+
+bool EVMStackAlloc::successorsHaveUses(unsigned reg, const MachineInstr &MI) const {
+  llvm_unreachable("unimplemented.");
+}
+
+FunctionPass *llvm::createEVMStackAllocPass() {
+  return new EVMStackAlloc();
 }

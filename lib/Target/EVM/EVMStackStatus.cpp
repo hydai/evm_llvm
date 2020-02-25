@@ -9,15 +9,15 @@ using namespace llvm;
 
 namespace evm {
 
-unsigned evm::StackStatus::getStackDepth() const {
+unsigned EVMStackStatus::getStackDepth() const {
   return stackElements.size();
 }
 
-unsigned StackStatus::get(unsigned depth) const {
+unsigned EVMStackStatus::get(unsigned depth) const {
   return stackElements.rbegin()[depth];
 }
 
-void StackStatus::swap(unsigned depth) {
+void EVMStackStatus::swap(unsigned depth) {
     assert(depth != 0);
     assert(stackElements.size() >= 2);
     /*
@@ -33,7 +33,7 @@ void StackStatus::swap(unsigned depth) {
     std::iter_swap(stackElements.rbegin(), stackElements.rbegin() + depth);
 }
 
-void StackStatus::dup(unsigned depth) {
+void EVMStackStatus::dup(unsigned depth) {
   unsigned elem = *(stackElements.rbegin() + depth);
 
   /*
@@ -46,7 +46,7 @@ void StackStatus::dup(unsigned depth) {
   stackElements.push_back(elem);
 }
 
-void StackStatus::pop() {
+void EVMStackStatus::pop() {
   /*
   LLVM_DEBUG({
     unsigned reg = stackElements.back();
@@ -57,7 +57,7 @@ void StackStatus::pop() {
   */
 }
 
-void StackStatus::push(unsigned reg) {
+void EVMStackStatus::push(unsigned reg) {
   /*
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(reg);
@@ -68,7 +68,7 @@ void StackStatus::push(unsigned reg) {
 }
 
 
-void StackStatus::dump() const {
+void EVMStackStatus::dump() const {
   /*
   LLVM_DEBUG({
     dbgs() << "  Stack :  xRegion_size = " << getSizeOfXRegion() << "\n";
@@ -83,4 +83,23 @@ void StackStatus::dump() const {
   */
 }
 
+unsigned EVMStackStatus::findRegDepth(unsigned reg) const {
+  unsigned curHeight = getStackDepth();
+
+  for (unsigned d = 0; d < curHeight; ++d) {
+    unsigned stackReg = get(d);
+    if (stackReg == reg) {
+      return d;
+      /*
+      depth = d;
+      LLVM_DEBUG({
+        dbgs() << "  Found %" << Register::virtReg2Index(reg)
+               << " at depth: " << depth << "\n";
+      });
+      return depth;
+      */
+    }
+  }
+  llvm_unreachable("Cannot find register on stack");
+}
 };
