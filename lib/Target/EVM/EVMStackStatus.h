@@ -15,7 +15,6 @@
 
 #include <vector>
 
-namespace llvm {
 namespace evm {
 
 class StackStatus {
@@ -57,7 +56,6 @@ private:
   llvm::DenseMap<unsigned, unsigned> remainingUses;
 };
 
-};
 };
 
 

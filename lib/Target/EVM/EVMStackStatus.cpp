@@ -1,19 +1,23 @@
 
 #include "EVMStackStatus.h"
+#include "llvm/CodeGen/Register.h"
+#include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "evm-stackstatus"
 
-namespace llvm {
+using namespace llvm;
+
+namespace evm {
 
 unsigned evm::StackStatus::getStackDepth() const {
   return stackElements.size();
 }
 
-unsigned evm::StackStatus::get(unsigned depth) const {
+unsigned StackStatus::get(unsigned depth) const {
   return stackElements.rbegin()[depth];
 }
 
-void evm::StackStatus::swap(unsigned depth) {
+void StackStatus::swap(unsigned depth) {
     assert(depth != 0);
     assert(stackElements.size() >= 2);
     /*
@@ -29,20 +33,20 @@ void evm::StackStatus::swap(unsigned depth) {
     std::iter_swap(stackElements.rbegin(), stackElements.rbegin() + depth);
 }
 
-void evm::StackStatus::dup(unsigned depth) {
+void StackStatus::dup(unsigned depth) {
   unsigned elem = *(stackElements.rbegin() + depth);
 
   /*
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(elem);
-    dbgs() << "  Duplicating %" << idx << " at depth " << depth << "\n";
+    dbgs() << "  Duplicating " << idx << " at depth " << depth << "\n";
   });
   */
 
   stackElements.push_back(elem);
 }
 
-void evm::StackStatus::pop() {
+void StackStatus::pop() {
   /*
   LLVM_DEBUG({
     unsigned reg = stackElements.back();
@@ -53,7 +57,7 @@ void evm::StackStatus::pop() {
   */
 }
 
-void evm::StackStatus::push(unsigned reg) {
+void StackStatus::push(unsigned reg) {
   /*
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(reg);
@@ -64,7 +68,7 @@ void evm::StackStatus::push(unsigned reg) {
 }
 
 
-void evm::StackStatus::dump() const {
+void StackStatus::dump() const {
   /*
   LLVM_DEBUG({
     dbgs() << "  Stack :  xRegion_size = " << getSizeOfXRegion() << "\n";
