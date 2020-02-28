@@ -63,6 +63,9 @@ public:
   unsigned getEdgeSetIndex(Edge edge) const;
   unsigned getEdgeIndex(Edge edge) const;
 
+  Edge getEdge(unsigned edgeIndex) const;
+  unsigned getEdgeSet(unsigned edgesetIndex) const;
+
   void reset() {
     edgeIndex2EdgeSet.clear();
     edgeIndex.clear();
@@ -82,6 +85,58 @@ private:
   // given two edges, merge their edgesets.
   void mergeEdgeSets(Edge edge1, Edge edge2);
 
+};
+
+class EVMStackStatus {
+public:
+  EVMStackStatus() {}
+
+  void swap(unsigned depth);
+  void dup(unsigned depth);
+  void push(unsigned reg);
+  void pop();
+
+  unsigned get(unsigned depth) const;
+  void dump() const;
+
+  unsigned getSizeOfXRegion() const {
+    return sizeOfXRegion;
+  }
+  unsigned getSizeOfLRegion() const {
+    return getStackDepth() - sizeOfXRegion;
+  }
+
+  bool empty() const {
+    return stackElements.empty();
+  }
+
+  void clear() {
+    stackElements.clear();
+    sizeOfXRegion = 0;
+  }
+
+  const std::vector<unsigned> &getStackElements() const {
+    return stackElements;
+  }
+
+  unsigned findRegDepth(unsigned reg) const;
+
+  // Stack depth = size of X + size of L
+  unsigned getStackDepth() const;
+
+  void instantiateXRegionStack(std::vector<unsigned> &stack) {
+    assert(getStackDepth() == 0);
+    for (auto element : stack) {
+      stackElements.push_back(element);
+    }
+    sizeOfXRegion = stack.size();
+  }
+
+private:
+  // stack arrangements.
+  std::vector<unsigned> stackElements;
+
+  unsigned sizeOfXRegion;
 };
 
 class EVMStackAlloc : public MachineFunctionPass {
@@ -133,7 +188,7 @@ private:
   StackStatus currentStackStatus;
 
   // This is used to find stack locations
-  evm::EVMStackStatus stack;
+  EVMStackStatus stack;
 
   std::vector<unsigned> memoryAssignment;
 

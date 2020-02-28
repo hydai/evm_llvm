@@ -10,7 +10,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "EVM.h"
-#include "EVMStackStatus.h"
 #include "EVMStackAllocAnalysis.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
@@ -27,6 +26,88 @@ char EVMStackAlloc::ID = 0;
 
 INITIALIZE_PASS(EVMStackAlloc, "evm-stackalloc",
                 "Stack Allocation Analysis", false, true)
+
+
+unsigned EVMStackStatus::getStackDepth() const {
+  return stackElements.size();
+}
+
+unsigned EVMStackStatus::get(unsigned depth) const {
+  return stackElements.rbegin()[depth];
+}
+
+void EVMStackStatus::swap(unsigned depth) {
+    assert(depth != 0);
+    assert(stackElements.size() >= 2);
+    LLVM_DEBUG({
+      unsigned first = stackElements.rbegin()[0];
+      unsigned second = stackElements.rbegin()[depth];
+      unsigned fst_idx = Register::virtReg2Index(first);
+      unsigned snd_idx = Register::virtReg2Index(second);
+      dbgs() << "  SWAP" << depth << ": Swapping %" << fst_idx << " and %"
+             << snd_idx << "\n";
+    });
+    std::iter_swap(stackElements.rbegin(), stackElements.rbegin() + depth);
+}
+
+void EVMStackStatus::dup(unsigned depth) {
+  unsigned elem = *(stackElements.rbegin() + depth);
+
+  LLVM_DEBUG({
+    unsigned idx = Register::virtReg2Index(elem);
+    dbgs() << "  Duplicating " << idx << " at depth " << depth << "\n";
+  });
+
+  stackElements.push_back(elem);
+}
+
+void EVMStackStatus::pop() {
+  LLVM_DEBUG({
+    unsigned reg = stackElements.back();
+    unsigned idx = Register::virtReg2Index(reg);
+    dbgs() << "  Popping %" << idx << " from stack.\n";
+  });
+  stackElements.pop_back();
+}
+
+void EVMStackStatus::push(unsigned reg) {
+  LLVM_DEBUG({
+    unsigned idx = Register::virtReg2Index(reg);
+    dbgs() << "  Pushing %" << idx << " to top of stack.\n";
+  });
+  stackElements.push_back(reg);
+}
+
+
+void EVMStackStatus::dump() const {
+  LLVM_DEBUG({
+    dbgs() << "  Stack :  xRegion_size = " << getSizeOfXRegion() << "\n";
+    unsigned counter = 0;
+    for (auto i = stackElements.rbegin(), e = stackElements.rend(); i != e; ++i) {
+      unsigned idx = Register::virtReg2Index(*i);
+      dbgs() << "(" << counter << ", %" << idx << "), ";
+      counter ++;
+    }
+    dbgs() << "\n";
+  });
+}
+
+unsigned EVMStackStatus::findRegDepth(unsigned reg) const {
+  unsigned curHeight = getStackDepth();
+
+  for (unsigned d = 0; d < curHeight; ++d) {
+    unsigned stackReg = get(d);
+    if (stackReg == reg) {
+      LLVM_DEBUG({
+        dbgs() << "  Found %" << Register::virtReg2Index(reg)
+               << " at depth: " << d << "\n";
+      });
+      return d;
+    }
+  }
+  llvm_unreachable("Cannot find register on stack");
+}
+
 
 unsigned EdgeSets::getEdgeSetIndex(Edge edge) const {
   // Linear search. Can improve it.
@@ -122,6 +203,29 @@ void EdgeSets::mergeEdgeSets(Edge edge1, Edge edge2) {
   return;
 }
 
+EdgeSets::Edge EdgeSets::getEdge(unsigned edgeId) const {
+  auto result = edgeIndex.find(edgeId);
+  assert(result != edgeIndex.end());
+  return result->second;
+}
+
+void EdgeSets::dump() const {
+  LLVM_DEBUG({
+    dbgs() << "  Computed edge set:\n";
+    for (std::pair<unsigned, unsigned> it : edgeIndex2EdgeSet) {
+      // edge set Index : edge index
+      unsigned edgeId = it.first;
+      unsigned esIndex = it.second;
+      // find the Edges
+      Edge edge = getEdge(edgeId);
+
+      dbgs() << "    MBB" << edge.first->getNumber() << " -> MBB"
+             << edge.second->getNumber() << ": " << esIndex << "\n";
+    }
+    dbgs() << "-------------------------------------------------\n";
+  });
+}
+
 void EVMStackAlloc::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<LiveIntervals>();
   //AU.setPreservesCFG();
@@ -143,6 +247,7 @@ void EVMStackAlloc::allocateRegistersToStack(MachineFunction &F) {
 
     // compute edge sets
     edgeSets.computeEdgeSets(&F);
+    edgeSets.dump();
 
     // analyze each BB
     for (MachineBasicBlock &MBB : F) {
@@ -226,12 +331,21 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
 }
 
 void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
+  LLVM_DEBUG({ dbgs() << "  Analyzing MBB" << MBB->getNumber() << "\n"; });
   beginOfBlockUpdates(MBB);
+
+  LLVM_DEBUG({
+    dbgs() << "    X Stack dump: ";
+
+  });
   
   for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;) {
     MachineInstr &MI = *I++;
     handleDef(MI);
     handleUses(MI);
+
+    // rearrange operands
+    // TODO
   }
 
   endOfBlockUpdates(MBB);
