@@ -81,6 +81,7 @@ private:
 
   // given two edges, merge their edgesets.
   void mergeEdgeSets(Edge edge1, Edge edge2);
+
 };
 
 class EVMStackAlloc : public MachineFunctionPass {
@@ -107,8 +108,6 @@ public:
   void getXStackRegion(unsigned edgeSetIndex,
                        std::vector<unsigned> xRegion) const;
   
-  EdgeSets& getEdgeSets() const;
-
 private:
   typedef struct {
     std::set<unsigned> X; // Transfer Stack
@@ -142,6 +141,9 @@ private:
   std::map<unsigned, std::vector<unsigned>> edgeset2assignment;
 
   void initialize();
+
+  // 
+  void consolidateXRegionForEdgeSet(unsigned edgeSet);
 
   // the pass to analyze a single basicblock
   void analyzeBasicBlock(MachineBasicBlock *MBB);
@@ -181,6 +183,10 @@ private:
   unsigned findSpillingCandidate(std::set<unsigned> &vecRegs) const;
 
   bool liveIntervalWithinSameEdgeSet(unsigned def);
+
+
+  void beginOfBlockUpdates(MachineBasicBlock *MBB);
+  void endOfBlockUpdates(MachineBasicBlock* MBB);
 
   // Stack manipulation operations
   void insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI, unsigned memSlot);

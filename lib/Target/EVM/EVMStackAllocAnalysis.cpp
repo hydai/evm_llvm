@@ -123,7 +123,9 @@ void EdgeSets::mergeEdgeSets(Edge edge1, Edge edge2) {
 }
 
 void EVMStackAlloc::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.setPreservesAll();
+  AU.addRequired<LiveIntervals>();
+  //AU.setPreservesCFG();
+  MachineFunctionPass::getAnalysisUsage(AU);
 }
 
 void EVMStackAlloc::initialize() {
@@ -134,8 +136,10 @@ void EVMStackAlloc::initialize() {
 }
 
 void EVMStackAlloc::allocateRegistersToStack(MachineFunction &F) {
+    //assert(MRI->isSSA() && "Must be run on SSA."); 
     // clean up previous assignments.
     initialize();
+
 
     // compute edge sets
     edgeSets.computeEdgeSets(&F);
@@ -171,13 +175,66 @@ bool EVMStackAlloc::defIsLocal(const MachineInstr &MI) const {
 
   return LI.isLocal(MBBBegin, MBBEnd);
 }
+void EVMStackAlloc::consolidateXRegionForEdgeSet(unsigned edgetSetIndex) {
+  llvm_unreachable("unimplemented");
+}
+
+void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
+  stack.clear();
+
+  // find edgeset
+  if (MBB->pred_empty()) {
+    return;
+  }
+  MachineBasicBlock* Pred = *MBB->pred_begin();
+  EdgeSets::Edge edge = {Pred, MBB};
+  unsigned setIndex = edgeSets.getEdgeSetIndex(edge);
+
+  assert(edgeset2assignment.find(setIndex) != edgeset2assignment.end());
+  std::vector<unsigned> xStack = edgeset2assignment[setIndex];
+
+  // initialize the stack using x stack.
+  for (unsigned i = 0; i < xStack.size(); ++i) {
+    stack.push(xStack[i]);
+  }
+}
+
+void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
+  // make sure the reg is in X region.
+  assert(stack.getStackDepth() == stack.getSizeOfXRegion() &&
+         "L Region elements are still on the stack at end of MBB.");
+
+  std::vector<unsigned> xStack(stack.getStackElements());
+
+  for (MachineBasicBlock *NextMBB : MBB->successors()) {
+    unsigned edgetSetIndex = edgeSets.getEdgeSetIndex({MBB, NextMBB});
+
+    if (edgeset2assignment.find(edgetSetIndex) != edgeset2assignment.end()) {
+      // We've already have an x stack assignment previously. so now we will
+      // need to arrange them so they are the same
+      
+      // TODO: implement merging logics.
+      std::vector<unsigned> &another = edgeset2assignment[edgetSetIndex];
+      assert(another == xStack && "Two X Stack arrankkgements are different!");
+      consolidateXRegionForEdgeSet(edgetSetIndex);
+    }
+
+    // TODO: merge edgeset
+    edgeset2assignment.insert(
+        std::pair<unsigned, std::vector<unsigned>>(edgetSetIndex, xStack));
+  }
+}
 
 void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
+  beginOfBlockUpdates(MBB);
+  
   for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;) {
     MachineInstr &MI = *I++;
     handleDef(MI);
     handleUses(MI);
   }
+
+  endOfBlockUpdates(MBB);
 }
 
 StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
@@ -186,18 +243,62 @@ StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
   return regAssignments.lookup(reg);
 }
 
+// Test whether Reg, as defined at Def, has exactly one use. This is a
+// generalization of MachineRegisterInfo::hasOneUse that uses LiveIntervals
+// to handle complex cases.
+static bool hasOneUse(unsigned Reg, const MachineInstr *Def, MachineRegisterInfo *MRI,
+                      LiveIntervals *LIS) {
+  // Most registers are in SSA form here so we try a quick MRI query first.
+  if (MRI->hasOneUse(Reg))
+    return true;
+
+  bool HasOne = false;
+  const LiveInterval &LI = LIS->getInterval(Reg);
+  const VNInfo *DefVNI =
+      LI.getVNInfoAt(LIS->getInstructionIndex(*Def).getRegSlot());
+  assert(DefVNI);
+  for (auto &I : MRI->use_nodbg_operands(Reg)) {
+    const auto &Result = LI.Query(LIS->getInstructionIndex(*I.getParent()));
+    if (Result.valueIn() == DefVNI) {
+      if (!Result.isKill())
+        return false;
+      if (HasOne)
+        return false;
+      HasOne = true;
+    }
+  }
+  return HasOne;
+}
+
+
+
 // return true of the register use in the machine instruction is the last use.
 bool EVMStackAlloc::regIsLastUse(const MachineOperand &MOP) const {
-  if (MOP.isKill()) return true;
+  assert(MOP.isReg());
+  unsigned reg = MOP.getReg();
 
-  // TODO: `isKill` might not be 100% accurate.
-  return false;
+  if (hasOneUse(reg, MOP.getParent(), MRI, LIS))
+    return true;
+  
+  // iterate over all uses
+  const MachineInstr *MI = MOP.getParent();
+  SlotIndex MISlot = LIS->getInstructionIndex(*MI).getRegSlot();
+  SlotIndex BBEndSlot = LIS->getMBBEndIdx(MI->getParent());
+  for (auto &Use : MRI->use_nodbg_operands(reg)) {
+    MachineInstr * UseMI = Use.getParent();
+    SlotIndex UseSlot = LIS->getInstructionIndex(*UseMI).getRegSlot();
+
+    if (SlotIndex::isEarlierInstr(MISlot, UseSlot) &&
+        SlotIndex::isEarlierInstr(UseSlot, BBEndSlot)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // return the number of uses of the register.
 unsigned EVMStackAlloc::getRegNumUses(unsigned reg) const {
-  llvm_unreachable("unimplemented");
-  return 0;
+  return std::distance(MRI->use_nodbg_begin(reg), MRI->use_nodbg_end());
 }
 
 void EVMStackAlloc::handleDef(MachineInstr &MI) {
@@ -213,8 +314,7 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
     if (MRI->use_nodbg_empty(defReg)) {
       regAssignments.insert(std::pair<unsigned, StackAssignment>(
           defReg, {NO_ALLOCATION, 0}));
-      // TODO insert pop after this instruction.
-      llvm_unreachable("Need to implement insert pop after it.");
+      insertPopAfter(MI);
       return;
     }
 
@@ -380,7 +480,7 @@ void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP)
       }
     }
   } else { // It is not the last use of a register.
-    assert(hasUsesAfterInSameBB(useReg, MI) || successorsHaveUses(useReg, MI));
+    assert(hasUsesAfterInSameBB(useReg, MI)/* || successorsHaveUses(useReg, MI)*/);
 
     // * If it is not the last use in the same BB, dup it.
     // we only care about the last use in the BB, becuase only it matters
@@ -471,6 +571,7 @@ void EVMStackAlloc::pruneStackDepth() {
     return;
   }
   LLVM_DEBUG(dbgs() << "Stack Depth exceeds maximum, start pruning.");
+  llvm_unreachable("unimplemented.");
 
   // First look at transfer stackœ:
   unsigned spillingCandidate = 0;
@@ -500,12 +601,23 @@ void EVMStackAlloc::getXStackRegion(unsigned edgeSetIndex,
 
 bool EVMStackAlloc::runOnMachineFunction(MachineFunction &MF) {
   TII = MF.getSubtarget<EVMSubtarget>().getInstrInfo(); 
+  LIS = &getAnalysis<LiveIntervals>();
+  MRI = &MF.getRegInfo();
   allocateRegistersToStack(MF);
   return true;
 }
 
 bool EVMStackAlloc::successorsHaveUses(unsigned reg, const MachineInstr &MI) const {
-  llvm_unreachable("unimplemented.");
+  const MachineBasicBlock* MBB = MI.getParent();
+
+  // It is possible that we some NextMBB will not have uses. In this case we
+  // probably will need to pop it at the end of liveInterval.
+
+  for (const MachineBasicBlock* NextMBB : MBB->successors()) {
+    llvm_unreachable("unimplemented");
+  }
+
+  return false;
 }
 
 FunctionPass *llvm::createEVMStackAllocPass() {

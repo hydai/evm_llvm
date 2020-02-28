@@ -37,6 +37,19 @@ public:
     return getStackDepth() - sizeOfXRegion;
   }
 
+  bool empty() const {
+    return stackElements.empty();
+  }
+
+  void clear() {
+    stackElements.clear();
+    sizeOfXRegion = 0;
+  }
+
+  const std::vector<unsigned> &getStackElements() const {
+    return stackElements;
+  }
+
   unsigned findRegDepth(unsigned reg) const;
 
   // Stack depth = size of X + size of L
@@ -55,8 +68,6 @@ private:
   std::vector<unsigned> stackElements;
 
   unsigned sizeOfXRegion;
-
-  llvm::DenseMap<unsigned, unsigned> remainingUses;
 };
 
 };
