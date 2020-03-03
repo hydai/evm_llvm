@@ -37,14 +37,16 @@ unsigned EVMStackStatus::get(unsigned depth) const {
 }
 
 void EVMStackStatus::swap(unsigned depth) {
-    assert(depth != 0);
+    if (depth == 0) {
+      return;
+    }
     assert(stackElements.size() >= 2);
     LLVM_DEBUG({
       unsigned first = stackElements.rbegin()[0];
       unsigned second = stackElements.rbegin()[depth];
       unsigned fst_idx = Register::virtReg2Index(first);
       unsigned snd_idx = Register::virtReg2Index(second);
-      dbgs() << "  SWAP" << depth << ": Swapping %" << fst_idx << " and %"
+      dbgs() << "    SWAP" << depth << ": Swapping %" << fst_idx << " and %"
              << snd_idx << "\n";
     });
     std::iter_swap(stackElements.rbegin(), stackElements.rbegin() + depth);
@@ -55,7 +57,7 @@ void EVMStackStatus::dup(unsigned depth) {
 
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(elem);
-    dbgs() << "  Duplicating " << idx << " at depth " << depth << "\n";
+    dbgs() << "    Duplicating " << idx << " at depth " << depth << "\n";
   });
 
   stackElements.push_back(elem);
@@ -65,7 +67,7 @@ void EVMStackStatus::pop() {
   LLVM_DEBUG({
     unsigned reg = stackElements.back();
     unsigned idx = Register::virtReg2Index(reg);
-    dbgs() << "  Popping %" << idx << " from stack.\n";
+    dbgs() << "    Popping %" << idx << " from stack.\n";
   });
   stackElements.pop_back();
 }
@@ -73,7 +75,7 @@ void EVMStackStatus::pop() {
 void EVMStackStatus::push(unsigned reg) {
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(reg);
-    dbgs() << "  Pushing %" << idx << " to top of stack.\n";
+    dbgs() << "    Pushing %" << idx << " to top of stack.\n";
   });
   stackElements.push_back(reg);
 }
@@ -99,7 +101,7 @@ unsigned EVMStackStatus::findRegDepth(unsigned reg) const {
     unsigned stackReg = get(d);
     if (stackReg == reg) {
       LLVM_DEBUG({
-        dbgs() << "  Found %" << Register::virtReg2Index(reg)
+        dbgs() << "    Found %" << Register::virtReg2Index(reg)
                << " at depth: " << d << "\n";
       });
       return d;
@@ -134,6 +136,12 @@ unsigned EdgeSets::getEdgeIndex(Edge edge) const {
 
 void EdgeSets::collectEdges(MachineFunction *MF) {
   std::set<MachineBasicBlock*> visited;
+
+  // Artifically create a {NULL, EntryMBB} Edge,
+  // and {ExitMBB, NULL} Edge
+  edgeIndex[0] = Edge(NULL, &MF->front());
+  edgeIndex[1] = Edge(&MF->back(), NULL);
+
   for (MachineBasicBlock &MBB : *MF) {
     // Skip if we have visited this MBB:
     if (visited.find(&MBB) != visited.end()) {
@@ -153,6 +161,8 @@ void EdgeSets::collectEdges(MachineFunction *MF) {
 void EdgeSets::computeEdgeSets(MachineFunction *MF) {
   // First, assign each edge with a number:
   collectEdges(MF);
+
+  // Insert a default edge set: NULL->Entry:
 
   // Then, assign a new edge set for each of the edges
   for (std::pair<unsigned, Edge> index : edgeIndex) {
@@ -211,7 +221,7 @@ EdgeSets::Edge EdgeSets::getEdge(unsigned edgeId) const {
 
 void EdgeSets::dump() const {
   LLVM_DEBUG({
-    dbgs() << "  Computed edge set:\n";
+    dbgs() << "  Computed edge set: (size of edgesets: " << 0 << ")\n";
     for (std::pair<unsigned, unsigned> it : edgeIndex2EdgeSet) {
       // edge set Index : edge index
       unsigned edgeId = it.first;
@@ -219,8 +229,17 @@ void EdgeSets::dump() const {
       // find the Edges
       Edge edge = getEdge(edgeId);
 
-      dbgs() << "    MBB" << edge.first->getNumber() << " -> MBB"
-             << edge.second->getNumber() << ": " << esIndex << "\n";
+      if (edge.first == NULL) {
+        dbgs() << "    EntryMBB"
+               << " -> MBB" << edge.second->getNumber() << " : " << esIndex
+               << "\n";
+      } else if (edge.second == NULL) {
+        dbgs() << "    MBB" << edge.first->getNumber() << " -> ExitMBB"
+               << " : " << esIndex << "\n";
+      } else {
+        dbgs() << "    MBB" << edge.first->getNumber() << " -> MBB"
+               << edge.second->getNumber() << " : " << esIndex << "\n";
+      }
     }
     dbgs() << "-------------------------------------------------\n";
   });
@@ -240,19 +259,20 @@ void EVMStackAlloc::initialize() {
 }
 
 void EVMStackAlloc::allocateRegistersToStack(MachineFunction &F) {
-    //assert(MRI->isSSA() && "Must be run on SSA."); 
-    // clean up previous assignments.
-    initialize();
+  // assert(MRI->isSSA() && "Must be run on SSA.");
+  // clean up previous assignments.
+  initialize();
 
+  // compute edge sets
+  edgeSets.computeEdgeSets(&F);
+  edgeSets.dump();
 
-    // compute edge sets
-    edgeSets.computeEdgeSets(&F);
-    edgeSets.dump();
+  // analyze each BB
+  for (MachineBasicBlock &MBB : F) {
+    analyzeBasicBlock(&MBB);
+  }
 
-    // analyze each BB
-    for (MachineBasicBlock &MBB : F) {
-      analyzeBasicBlock(&MBB);
-    }
+  // exit check: stack should be empty
 }
 
 static unsigned getDefRegister(const MachineInstr &MI) {
@@ -331,18 +351,22 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
 }
 
 void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
-  LLVM_DEBUG({ dbgs() << "  Analyzing MBB" << MBB->getNumber() << "\n"; });
+  LLVM_DEBUG({ dbgs() << "  Analyzing MBB" << MBB->getNumber() << ":\n"; });
   beginOfBlockUpdates(MBB);
 
   LLVM_DEBUG({
-    dbgs() << "    X Stack dump: ";
-
+    dbgs() << "    X Stack dump: (size: " << stack.getStackDepth() << ") \n";
+    stack.dump();
   });
   
   for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;) {
     MachineInstr &MI = *I++;
-    handleDef(MI);
+
+    LLVM_DEBUG({ dbgs() << "  Instr: "; MI.dump();});
+
+    // First consume, then create
     handleUses(MI);
+    handleDef(MI);
 
     // rearrange operands
     // TODO
@@ -416,6 +440,10 @@ unsigned EVMStackAlloc::getRegNumUses(unsigned reg) const {
 }
 
 void EVMStackAlloc::handleDef(MachineInstr &MI) {
+  if (MI.getNumDefs() == 0) {
+    return;
+  }
+
   unsigned defReg = getDefRegister(MI);
 
   // TODO: insert to SA
@@ -652,23 +680,23 @@ bool EVMStackAlloc::hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) c
     return false;
   }
 
+  SlotIndex FstUse = LIS->getInstructionIndex(MI);
+
   // iterate over uses and see if any use exists in the same BB.
-  for (MachineRegisterInfo::use_instr_nodbg_iterator
-       Use = MRI->use_instr_nodbg_begin(reg),
-       E = MRI->use_instr_nodbg_end();
+  for (MachineRegisterInfo::use_nodbg_iterator 
+       Use = MRI->use_nodbg_begin(reg),
+       E = MRI->use_nodbg_end();
        Use != E; ++Use) {
-    MachineInstr &MI_USE = *Use;
+    
+    SlotIndex SI = LIS->getInstructionIndex(*Use->getParent());
 
-    MachineBasicBlock *MBB_USE = MI_USE.getParent();
-    if (MBB_USE != MBB) {
-      continue;
+    SlotIndex EndOfMBBSI = LIS->getMBBEndIdx(Use->getParent()->getParent());
+
+    // Check if SI lies in between FstUSE and EndOfMBBSI
+    if (SlotIndex::isEarlierInstr(FstUse, SI) &&
+        SlotIndex::isEarlierInstr(SI, EndOfMBBSI)) {
+      return true;
     }
-
-    //SlotIndex SI = LIS->getInstructionIndex(MI_USE);
-
-    // look for uses lie between [SI, EndOfMBB)
-    // TODO
-
   }
 
   // we cannot find a use after it in BB
