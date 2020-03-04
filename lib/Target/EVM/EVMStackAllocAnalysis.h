@@ -207,7 +207,7 @@ private:
   void handleUses(MachineInstr &MI);
 
   // handle a single use in the specific machine instruction. 
-  void handleSingleUse(MachineInstr &MI, const MachineOperand &MOP);
+  bool handleSingleUse(MachineInstr &MI, const MachineOperand &MOP);
 
   // if the def and use is within a single BB
   bool defIsLocal(const MachineInstr &MI) const;

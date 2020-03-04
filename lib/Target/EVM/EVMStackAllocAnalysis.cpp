@@ -368,6 +368,8 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
     handleUses(MI);
     handleDef(MI);
 
+    stack.dump();
+
     // rearrange operands
     // TODO
   }
@@ -386,6 +388,8 @@ StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
 // to handle complex cases.
 static bool hasOneUse(unsigned Reg, const MachineInstr *Def, MachineRegisterInfo *MRI,
                       LiveIntervals *LIS) {
+  return MRI->hasOneUse(Reg);
+  /*
   // Most registers are in SSA form here so we try a quick MRI query first.
   if (MRI->hasOneUse(Reg))
     return true;
@@ -406,6 +410,7 @@ static bool hasOneUse(unsigned Reg, const MachineInstr *Def, MachineRegisterInfo
     }
   }
   return HasOne;
+  */
 }
 
 
@@ -456,6 +461,9 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
     if (MRI->use_nodbg_empty(defReg)) {
       regAssignments.insert(std::pair<unsigned, StackAssignment>(
           defReg, {NO_ALLOCATION, 0}));
+      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+                        << Register::virtReg2Index(defReg)
+                        << " to NO_ALLOCATION.\n");
       insertPopAfter(MI);
       return;
     }
@@ -465,6 +473,9 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
       // record assignment
       regAssignments.insert(
           std::pair<unsigned, StackAssignment>(defReg, {L_STACK, 0}));
+      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+                        << Register::virtReg2Index(defReg)
+                        << " to LOCAL STACK.\n");
       // update stack status
       currentStackStatus.L.insert(defReg);
       stack.push(defReg);
@@ -475,6 +486,10 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
     // This could greatly benefit from a stack machine specific optimization.
     if (liveIntervalWithinSameEdgeSet(defReg)) {
       // it is a def register, so we only care about out-going edges.
+
+      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+                        << Register::virtReg2Index(defReg)
+                        << " to TRANSFER STACK.\n");
 
       // TODO: allocate X regions to the following code
       MachineBasicBlock *ThisMBB = const_cast<MachineInstr &>(MI).getParent();
@@ -529,19 +544,29 @@ bool EVMStackAlloc::liveIntervalWithinSameEdgeSet(unsigned defReg) {
 }
 
 void EVMStackAlloc::handleUses(MachineInstr &MI) {
+  unsigned uses = 0;
   for (const MachineOperand &MOP : MI.explicit_uses()) {
-    handleSingleUse(MI, MOP);
+    bool handled = handleSingleUse(MI, MOP);
+    if (handled) {
+      ++uses;
+    }
   }
+  for (unsigned i = 0; i < uses; ++i) {
+    stack.pop();
+  }
+
   // TODO: rearrange stack order.
 }
 
 void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
                                                unsigned memSlot) {
-  LLVM_DEBUG(dbgs() << "  %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
-                    << memSlot << ") inserted.\n");
-
+  MachineInstrBuilder getlocal = 
   BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::pGETLOCAL_r), reg)
       .addImm(memSlot);
+  LIS->InsertMachineInstrInMaps(*getlocal);
+
+  LLVM_DEBUG(dbgs() << "  %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
+                    << memSlot << ") inserted.\n");
 }
 
 void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
@@ -549,6 +574,7 @@ void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
   MachineFunction &MF = *MBB->getParent();
   MachineInstrBuilder dup = BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::DUP_r)).addImm(index);
   MBB->insert(MachineBasicBlock::iterator(MI), dup);
+  LIS->InsertMachineInstrInMaps(*dup);
   stack.dup(index);
 }
 
@@ -559,6 +585,7 @@ void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, uns
   MachineInstrBuilder putlocal =
       BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::pPUTLOCAL_r)).addReg(reg).addImm(memSlot);
   MBB->insertAfter(MachineBasicBlock::iterator(MI), putlocal);
+  LIS->InsertMachineInstrInMaps(*putlocal);
   LLVM_DEBUG(dbgs() << "  PUTLOCAL(" << memSlot << ") => %" << memSlot
                     << "  is inserted.\n");
 }
@@ -568,6 +595,7 @@ void EVMStackAlloc::insertPopAfter(MachineInstr &MI) {
   MachineFunction &MF = *MBB->getParent();
   MachineInstrBuilder pop = BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::POP_r));
   MBB->insertAfter(MachineBasicBlock::iterator(MI), pop);
+  LIS->InsertMachineInstrInMaps(*pop);
   stack.pop();
 }
 
@@ -577,12 +605,13 @@ void EVMStackAlloc::insertSwapBefore(unsigned index, MachineInstr &MI) {
       BuildMI(*MBB->getParent(), MI.getDebugLoc(), TII->get(EVM::SWAP_r))
           .addImm(index);
   MBB->insert(MachineBasicBlock::iterator(MI), swap);
+  LIS->InsertMachineInstrInMaps(*swap);
   stack.swap(index);
 }
 
-void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP) {
+bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP) {
   if (!MOP.isReg()) {
-    return;
+    return false;
   }
 
   unsigned useReg = MOP.getReg();
@@ -592,7 +621,7 @@ void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP)
   StackAssignment SA = regAssignments.lookup(useReg);
   // we also do not care if we has determined we do not allocate it.
   if (SA.region == NO_ALLOCATION) {
-    return;
+    return false;
   }
 
   // update stack status if it is the last use.
@@ -601,6 +630,7 @@ void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP)
       case NONSTACK: {
         // release memory slot
         insertLoadFromMemoryBefore(useReg, MI, SA.slot);
+        stack.push(useReg);
         currentStackStatus.M.erase(useReg);
         deallocateMemorySlot(useReg);
         break;
@@ -622,14 +652,32 @@ void EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP)
       }
     }
   } else { // It is not the last use of a register.
-    assert(hasUsesAfterInSameBB(useReg, MI)/* || successorsHaveUses(useReg, MI)*/);
 
-    // * If it is not the last use in the same BB, dup it.
-    // we only care about the last use in the BB, becuase only it matters
-    unsigned depth = stack.findRegDepth(useReg);
-    insertDupBefore(depth, MI);
-    return;
+    //assert(hasUsesAfterInSameBB(useReg, MI)/* || successorsHaveUses(useReg, MI)*/);
+    switch (SA.region) {
+      case NONSTACK: {
+        // release memory slot
+        insertLoadFromMemoryBefore(useReg, MI, SA.slot);
+        stack.push(useReg);
+        break;
+      }
+      case X_STACK: {
+        unsigned depth = stack.findRegDepth(useReg);
+        insertDupBefore(depth, MI);
+        break;
+      }
+      case L_STACK: {
+        unsigned depth = stack.findRegDepth(useReg);
+        insertDupBefore(depth, MI);
+        break;
+      }
+      default: {
+        llvm_unreachable("Impossible case");
+        break;
+      }
+    }
   }
+  return true;
 }
 
 // return the allocated slot index of a memory
