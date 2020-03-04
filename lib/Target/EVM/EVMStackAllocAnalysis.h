@@ -175,6 +175,15 @@ private:
     }
   } StackStatus;
 
+  typedef struct {
+    bool isLastUse;
+    bool isMemUse;
+    unsigned stackDepth;
+    unsigned reg;
+  } RegUseType;
+
+  typedef std::pair<unsigned, RegUseType> MOPUseType;
+
   LiveIntervals *LIS;
   const EVMInstrInfo *TII;
   MachineFunction *F;
@@ -206,8 +215,9 @@ private:
   void handleDef(MachineInstr &MI);
   void handleUses(MachineInstr &MI);
 
-  // handle a single use in the specific machine instruction. 
-  bool handleSingleUse(MachineInstr &MI, const MachineOperand &MOP);
+  // handle a single use in the specific machine instruction.
+  bool handleSingleUse(MachineInstr &MI, const MachineOperand &MOP,
+                       std::vector<RegUseType> &useTypes);
 
   // if the def and use is within a single BB
   bool defIsLocal(const MachineInstr &MI) const;
@@ -250,7 +260,12 @@ private:
   void insertSwapBefore(unsigned index, MachineInstr &MI);
   void insertPopAfter(MachineInstr &MI);
 
+  void handleUnaryOpcode(MOPUseType useTypes, MachineInstr &MI);
+  void handleBinaryOpcode(MOPUseType op1, MOPUseType op2,MachineInstr &MI);
+  void handleArbitraryOpcode(std::vector<MOPUseType> ops,MachineInstr &MI);
+  void handleOperandLiveness(RegUseType useType, MachineOperand &MOP);
 
+  void loadOperandFromMemoryIfNeeded(RegUseType op, MachineInstr &MI);
   bool runOnMachineFunction(MachineFunction &MF) override;
 };
 

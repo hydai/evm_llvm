@@ -301,6 +301,7 @@ bool EVMStackAlloc::defIsLocal(const MachineInstr &MI) const {
   return LI.isLocal(MBBBegin, MBBEnd);
 }
 void EVMStackAlloc::consolidateXRegionForEdgeSet(unsigned edgetSetIndex) {
+  // TODO
   llvm_unreachable("unimplemented");
 }
 
@@ -338,7 +339,6 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
       // We've already have an x stack assignment previously. so now we will
       // need to arrange them so they are the same
       
-      // TODO: implement merging logics.
       std::vector<unsigned> &another = edgeset2assignment[edgetSetIndex];
       assert(another == xStack && "Two X Stack arrankkgements are different!");
       consolidateXRegionForEdgeSet(edgetSetIndex);
@@ -366,12 +366,13 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
 
     // First consume, then create
     handleUses(MI);
+    // rearrange operands
+    // TODO
+
+
     handleDef(MI);
 
     stack.dump();
-
-    // rearrange operands
-    // TODO
   }
 
   endOfBlockUpdates(MBB);
@@ -544,18 +545,110 @@ bool EVMStackAlloc::liveIntervalWithinSameEdgeSet(unsigned defReg) {
 }
 
 void EVMStackAlloc::handleUses(MachineInstr &MI) {
-  unsigned uses = 0;
+
+  // Collect reg use info
+  std::vector<MOPUseType> useTypes;
+  unsigned index = 0;
   for (const MachineOperand &MOP : MI.explicit_uses()) {
-    bool handled = handleSingleUse(MI, MOP);
-    if (handled) {
-      ++uses;
+    if (!MOP.isReg()) {
+      LLVM_DEBUG({
+        if (MI.getOpcode() == EVM::PUSH32_r) {
+          assert(MOP.isImm() || MOP.isCImm());
+          assert(MI.getNumExplicitOperands() - MI.getNumExplicitDefs() == 1);
+        } else if (MI.getOpcode() == EVM::JUMP_r ||
+                   MI.getOpcode() == EVM::JUMPI_r) {
+          assert(MOP.isSymbol() || MOP.isMBB());
+        }
+      });
+      ++index;
+      continue;
     }
-  }
-  for (unsigned i = 0; i < uses; ++i) {
-    stack.pop();
+
+    unsigned useReg = MOP.getReg();
+    // get stack assignment
+    assert(regAssignments.find(useReg) != regAssignments.end());
+    StackAssignment SA = regAssignments.lookup(useReg);
+    assert(SA.region != NO_ALLOCATION && "Cannot see unused register use.");
+
+    bool isMemUse = false;
+    bool isLastUse = false;
+    if (regIsLastUse(MOP)) {
+      isLastUse = true;
+    }
+
+    if (SA.region == NONSTACK) {
+      // we need to handle memory types differently
+      isMemUse = true;
+    }
+    unsigned depth = stack.findRegDepth(useReg);
+
+    RegUseType RUT = {isLastUse, isMemUse, depth, useReg};
+    useTypes.push_back({index, RUT});
+    ++index;
   }
 
-  // TODO: rearrange stack order.
+  LLVM_DEBUG({
+    dbgs() << "      Uses: ";
+    for (MOPUseType &MUT : useTypes) {
+      dbgs() << " %" << Register::virtReg2Index(MUT.second.reg)
+             << " index: " << MUT.first
+             << ", last use: " << MUT.second.isLastUse << ", "
+             << "isMemUse: " << MUT.second.isMemUse << ", "
+             << "depth: " << MUT.second.stackDepth << "\n";
+    }
+  });
+
+  // Handle uses (back to front), insert DUPs, SWAPs if needed
+  unsigned numUses = index;
+  switch (numUses) {
+    case 1: {
+      // handle unary operands
+      assert(useTypes.size() == 1);
+      handleUnaryOpcode(useTypes[0], MI);
+      break;
+    }
+    case 2: {
+      // handle binary operands
+      assert(useTypes.size() == 2);
+      handleBinaryOpcode(useTypes[0], useTypes[1], MI);
+      break;
+    }
+    default: {
+      // handle default operands
+      assert(useTypes.size() > 2);
+      handleArbitraryOpcode(useTypes, MI);
+      break;
+    }
+  }
+  
+  
+
+  for (MOPUseType &MUT : reverse(useTypes)) {
+    unsigned index = MUT.first;
+    unsigned reg = MUT.second.reg;
+    StackAssignment SA = regAssignments.lookup(reg);
+    if (MUT.second.isMemUse) {
+      insertLoadFromMemoryBefore(reg, MI, SA.slot);
+      stack.push(reg);
+    }
+    if (MUT.second.isLastUse) {
+      if (MUT.second.isMemUse) {
+        currentStackStatus.M.erase(reg);
+        deallocateMemorySlot(reg);
+      } else {
+        // TODO: instead of SWAP, we might use DUP, and then clean up later
+        insertSwapBefore(MUT.second.stackDepth, MI);
+        if (SA.region == X_STACK) {
+          currentStackStatus.X.erase(reg);
+        }
+      }
+    }
+  }
+
+  
+
+  // clean up 
+
 }
 
 void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
@@ -564,6 +657,7 @@ void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
   BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::pGETLOCAL_r), reg)
       .addImm(memSlot);
   LIS->InsertMachineInstrInMaps(*getlocal);
+  stack.push(reg);
 
   LLVM_DEBUG(dbgs() << "  %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
                     << memSlot << ") inserted.\n");
@@ -586,6 +680,9 @@ void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, uns
       BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::pPUTLOCAL_r)).addReg(reg).addImm(memSlot);
   MBB->insertAfter(MachineBasicBlock::iterator(MI), putlocal);
   LIS->InsertMachineInstrInMaps(*putlocal);
+
+  // TODO: insert this new put local to LiveIntervals
+
   LLVM_DEBUG(dbgs() << "  PUTLOCAL(" << memSlot << ") => %" << memSlot
                     << "  is inserted.\n");
 }
@@ -609,7 +706,8 @@ void EVMStackAlloc::insertSwapBefore(unsigned index, MachineInstr &MI) {
   stack.swap(index);
 }
 
-bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP) {
+bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP,
+                                    std::vector<RegUseType> &usetypes) {
   if (!MOP.isReg()) {
     return false;
   }
@@ -630,7 +728,6 @@ bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP)
       case NONSTACK: {
         // release memory slot
         insertLoadFromMemoryBefore(useReg, MI, SA.slot);
-        stack.push(useReg);
         currentStackStatus.M.erase(useReg);
         deallocateMemorySlot(useReg);
         break;
@@ -808,6 +905,72 @@ bool EVMStackAlloc::successorsHaveUses(unsigned reg, const MachineInstr &MI) con
   }
 
   return false;
+}
+
+void EVMStackAlloc::loadOperandFromMemoryIfNeeded(RegUseType op, MachineInstr &MI) {
+  if (!op.isMemUse) {
+    return;
+  }
+
+  StackAssignment SA = getStackAssignment(op.reg);
+  assert(SA.region == NONSTACK);
+  insertLoadFromMemoryBefore(op.reg, MI, SA.slot);
+}
+
+void EVMStackAlloc::handleOperandLiveness(RegUseType useType, MachineOperand &MOP) {
+  assert(MOP.isReg() && useType.reg == MOP.getReg());
+
+  unsigned reg = useType.reg;
+
+  StackAssignment SA = getStackAssignment(reg);
+
+  if (regIsLastUse(MOP)) {
+    // when it goes out of liveness range, free resources if it is on memory or
+    // X region.
+    if (SA.region == NONSTACK) {
+      currentStackStatus.M.erase(reg);
+      deallocateMemorySlot(SA.slot);
+    }
+    if (SA.region == X_STACK) {
+      currentStackStatus.X.erase(reg);
+    }
+  }
+}
+
+void EVMStackAlloc::handleUnaryOpcode(EVMStackAlloc::MOPUseType op, MachineInstr &MI) {
+  assert(op.first == 0);
+
+  unsigned reg = op.second.reg;
+  MachineOperand &MOP = MI.getOperand(op.first + MI.getNumDefs());
+  StackAssignment SA = getStackAssignment(reg);
+
+  handleOperandLiveness(op.second, MOP);
+
+  // if there is only one operand, simply bring it to the top.
+  if (SA.region == NONSTACK) {
+    insertLoadFromMemoryBefore(reg, MI, SA.slot);
+  } else {
+    unsigned depth = stack.findRegDepth(reg);
+    if (regIsLastUse(MOP)) {
+      insertSwapBefore(depth, MI);
+    } else {
+      insertDupBefore(depth, MI);
+    }
+  }
+}
+
+void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType op2,
+                                       MachineInstr &MI) {
+  assert(op1.first == 0 && op2.first == 1);
+
+  handleOperandLiveness(op1.second, MI.getOperand(op1.first + MI.getNumDefs()));
+  handleOperandLiveness(op2.second, MI.getOperand(op2.first + MI.getNumDefs()));
+
+  unsigned reg1 = op1.second.reg;
+  unsigned reg2 = op2.second.reg;
+  StackAssignment SA1 = getStackAssignment(reg1);
+  StackAssignment SA2 = getStackAssignment(reg2);
+
 }
 
 FunctionPass *llvm::createEVMStackAllocPass() {
