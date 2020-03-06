@@ -366,17 +366,34 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
 
     // First consume, then create
     handleUses(MI);
-    // rearrange operands
-    // TODO
-
-
     handleDef(MI);
+
+    cleanUpDeadRegisters(MI);
 
     stack.dump();
   }
 
   endOfBlockUpdates(MBB);
 }
+
+void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
+  if (MI.getNumExplicitOperands() - MI.getNumExplicitDefs() <= 2) {
+    return;
+  }
+  std::vector<MOPUseType> useTypes;
+  unsigned numUses = calculateUseRegs(MI, useTypes);
+  assert(numUses > 2);
+
+  MachineBasicBlock::iterator insertPoint(MI);
+  insertPoint++;
+  for (MOPUseType mut : useTypes) {
+    unsigned depth = stack.findRegDepth(mut.second.reg);
+    if (depth != 0) {
+      insertSwapBefore(depth, *insertPoint);
+    }
+    insertPopBefore(*insertPoint);
+  }
+} 
 
 StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
   assert(regAssignments.find(reg) != regAssignments.end() &&
@@ -544,10 +561,7 @@ bool EVMStackAlloc::liveIntervalWithinSameEdgeSet(unsigned defReg) {
   }
 }
 
-void EVMStackAlloc::handleUses(MachineInstr &MI) {
-
-  // Collect reg use info
-  std::vector<MOPUseType> useTypes;
+unsigned EVMStackAlloc::calculateUseRegs(MachineInstr &MI, std::vector<MOPUseType> &useTypes) {
   unsigned index = 0;
   for (const MachineOperand &MOP : MI.explicit_uses()) {
     if (!MOP.isReg()) {
@@ -586,6 +600,14 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
     useTypes.push_back({index, RUT});
     ++index;
   }
+  return index;
+}
+
+void EVMStackAlloc::handleUses(MachineInstr &MI) {
+
+  // Collect reg use info
+  std::vector<MOPUseType> useTypes;
+  unsigned index = calculateUseRegs(MI, useTypes);
 
   LLVM_DEBUG({
     dbgs() << "      Uses: ";
@@ -620,34 +642,6 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
       break;
     }
   }
-  
-  
-
-  for (MOPUseType &MUT : reverse(useTypes)) {
-    unsigned index = MUT.first;
-    unsigned reg = MUT.second.reg;
-    StackAssignment SA = regAssignments.lookup(reg);
-    if (MUT.second.isMemUse) {
-      insertLoadFromMemoryBefore(reg, MI, SA.slot);
-      stack.push(reg);
-    }
-    if (MUT.second.isLastUse) {
-      if (MUT.second.isMemUse) {
-        currentStackStatus.M.erase(reg);
-        deallocateMemorySlot(reg);
-      } else {
-        // TODO: instead of SWAP, we might use DUP, and then clean up later
-        insertSwapBefore(MUT.second.stackDepth, MI);
-        if (SA.region == X_STACK) {
-          currentStackStatus.X.erase(reg);
-        }
-      }
-    }
-  }
-
-  
-
-  // clean up 
 
 }
 
@@ -695,6 +689,16 @@ void EVMStackAlloc::insertPopAfter(MachineInstr &MI) {
   LIS->InsertMachineInstrInMaps(*pop);
   stack.pop();
 }
+
+void EVMStackAlloc::insertPopBefore(MachineInstr &MI) {
+  MachineBasicBlock *MBB = MI.getParent();
+  MachineInstrBuilder pop =
+      BuildMI(*MBB->getParent(), MI.getDebugLoc(), TII->get(EVM::POP_r));
+  MBB->insert(MachineBasicBlock::iterator(MI), pop);
+  LIS->InsertMachineInstrInMaps(*pop);
+  stack.pop();
+}
+
 
 void EVMStackAlloc::insertSwapBefore(unsigned index, MachineInstr &MI) {
   MachineBasicBlock *MBB = MI.getParent();
@@ -963,13 +967,178 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
                                        MachineInstr &MI) {
   assert(op1.first == 0 && op2.first == 1);
 
-  handleOperandLiveness(op1.second, MI.getOperand(op1.first + MI.getNumDefs()));
-  handleOperandLiveness(op2.second, MI.getOperand(op2.first + MI.getNumDefs()));
+  MachineOperand &MOP1 = MI.getOperand(op1.first + MI.getNumDefs());
+  MachineOperand &MOP2 = MI.getOperand(op2.first + MI.getNumDefs());
+  handleOperandLiveness(op1.second, MOP1);
+  handleOperandLiveness(op2.second, MOP2);
 
   unsigned reg1 = op1.second.reg;
   unsigned reg2 = op2.second.reg;
   StackAssignment SA1 = getStackAssignment(reg1);
   StackAssignment SA2 = getStackAssignment(reg2);
+
+  if (SA1.region == NONSTACK && SA2.region == NONSTACK) {
+    insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
+    insertLoadFromMemoryBefore(reg1, MI, SA1.slot);
+  }
+
+  if (SA1.region == NONSTACK && SA2.region != NONSTACK) {
+    assert(SA2.region != NO_ALLOCATION);
+
+    unsigned depth = stack.findRegDepth(reg2);
+    if (regIsLastUse(MOP2)) {
+      if (depth != 0) {
+        // brings r2 to stack top
+        insertSwapBefore(depth, MI);
+      }
+    } else {
+      insertDupBefore(depth, MI);
+    }
+    insertLoadFromMemoryBefore(reg1, MI, SA1.slot);
+  }
+
+  if (SA1.region != NONSTACK && SA2.region == NONSTACK) {
+    assert(SA1.region != NO_ALLOCATION);
+
+    if (regIsLastUse(MOP1)) {
+      unsigned depth = stack.findRegDepth(reg1);
+      // depth == 0:
+      // r1, xx, xx --load-> r2, r1, xx --> swap1 --> r1, r2, xx
+      // depth != 0:
+      // xx, r1, xx -swap-> r1, xx, xx -load-> r2, r1, xx -swap1-> r1, r2, xx
+
+      if (depth != 0) {
+        insertSwapBefore(depth, MI);
+      }
+      insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
+      insertSwapBefore(1, MI);
+    } else {
+      insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
+      unsigned depth = stack.findRegDepth(reg1);
+      insertDupBefore(depth, MI);
+    }
+  }
+
+  if (SA1.region != NONSTACK && SA2.region != NONSTACK) {
+    assert(SA1.region != NO_ALLOCATION);
+    assert(SA2.region != NO_ALLOCATION);
+
+    unsigned depth1 = stack.findRegDepth(reg1);
+    unsigned depth2 = stack.findRegDepth(reg2);
+
+    bool lastUse1 = regIsLastUse(MOP1);
+    bool lastUse2 = regIsLastUse(MOP2);
+
+    if (lastUse1 && lastUse2) {
+      // all last uses
+      if (depth1 == 0 && depth2 == 1) {
+        // do nothing
+      }
+      if (depth1 == 0 && depth2 != 1) {
+        // r2 is not in place:
+        // A,X,B -S1-> X,A,B -S(depth2)-> B,A,X -S1-> A,B,X
+        insertSwapBefore(1, MI);
+        insertSwapBefore(depth2, MI);
+        insertSwapBefore(1, MI);
+      }
+      if (depth1 != 0 && depth2 == 1) {
+        insertSwapBefore(depth1, MI);
+      } 
+      if (depth1 != 0 && depth2 != 1) {
+        if (depth1 == 1 && depth2 == 0) {
+          insertSwapBefore(1, MI);
+        } else {
+          insertSwapBefore(depth2, MI);
+          insertSwapBefore(1, MI);
+          depth1 = stack.findRegDepth(reg1);
+          insertSwapBefore(depth1, MI);
+        }
+      }
+    }
+    
+    //  SWAP for reg1, DUP for reg2
+    if (lastUse1 && !lastUse2) {
+      if (depth1 == 0 && depth2 == 1) {
+        // keep reg2 while consume depth1
+        insertDupBefore(2, MI);
+        insertSwapBefore(1, MI);
+      }
+      if (depth1 == 0 && depth2 != 1) {
+        // r2 is not in place
+        insertDupBefore(depth2, MI);
+        depth1 = stack.findRegDepth(reg1);
+        insertSwapBefore(1, MI);
+      }
+      if (depth1 != 0 && depth2 == 1) {
+        insertSwapBefore(depth1, MI);
+      }
+      if (depth1 != 0 && depth2 != 1) {
+        insertDupBefore(depth2, MI);
+        insertSwapBefore(1, MI);
+        depth1 = stack.findRegDepth(reg1);
+        insertSwapBefore(depth1, MI);
+      }
+    }
+
+    // DUP for reg1, SWAP for reg2
+    if (!lastUse1 && lastUse2) {
+      if (depth1 == 0 && depth2 == 1) {
+        insertSwapBefore(1, MI);
+        insertDupBefore(2, MI);
+      }
+      if (depth1 == 0 && depth2 != 1) {
+        // r2 is not in place
+        // r1, x, r2 -S-> r2, r1, x -D-> r1, r2, r1, x
+        insertSwapBefore(depth2, MI);
+        insertDupBefore(1, MI);
+      }
+      if (depth1 != 0 && depth2 == 1) {
+        // r1 is not in place
+        // xx, r2, r1 -S-> r2, xx, r1 -D-> r1,r2, xx, r1
+        insertSwapBefore(depth2, MI);
+        depth1 = stack.findRegDepth(reg1);
+        insertDupBefore(depth1, MI);
+      }
+      if (depth1 != 0 && depth2 != 1) {
+        if (depth2 != 0) {
+          insertSwapBefore(depth1, MI);
+        }
+        // now reg2 is at top
+        depth1 = stack.findRegDepth(reg1);
+        insertDupBefore(depth1, MI);
+      }
+    }
+
+    if (!lastUse1 && !lastUse2) {
+      insertDupBefore(depth2, MI);
+      depth1 = stack.findRegDepth(reg1);
+      insertDupBefore(depth1, MI);
+    }
+  }
+}
+void EVMStackAlloc::handleArbitraryOpcode(std::vector<MOPUseType> useTypes,
+                                          MachineInstr &MI) {
+  // This is very tricky. 
+  // We should do the following:
+  // 1. DUP every operands on to stack top.
+  // 2. record dead registers.
+  // 3. execute Instruction.
+  // 4. SWAP each dead registers on top and pop it.
+
+  for (MOPUseType &useType : reverse(useTypes)) {
+    RegUseType rut = useType.second;
+    unsigned reg = rut.reg;
+    StackAssignment SA = getStackAssignment(reg);
+
+    if (rut.isMemUse) {
+      assert(SA.region == NONSTACK);
+      insertLoadFromMemoryBefore(reg, MI, SA.slot);
+    } else {
+      assert(SA.region != NONSTACK);
+      unsigned depth = stack.findRegDepth(reg);
+      insertDupBefore(depth, MI);
+    }
+  }
 
 }
 

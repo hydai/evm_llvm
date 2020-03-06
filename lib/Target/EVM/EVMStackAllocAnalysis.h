@@ -249,6 +249,9 @@ private:
 
   bool liveIntervalWithinSameEdgeSet(unsigned def);
 
+  void cleanUpDeadRegisters(MachineInstr &MI);
+  unsigned calculateUseRegs(MachineInstr &MI,
+                            std::vector<MOPUseType> &useTypes);
 
   void beginOfBlockUpdates(MachineBasicBlock *MBB);
   void endOfBlockUpdates(MachineBasicBlock* MBB);
@@ -259,6 +262,7 @@ private:
   void insertDupBefore(unsigned index, MachineInstr &MI);
   void insertSwapBefore(unsigned index, MachineInstr &MI);
   void insertPopAfter(MachineInstr &MI);
+  void insertPopBefore(MachineInstr &MI);
 
   void handleUnaryOpcode(MOPUseType useTypes, MachineInstr &MI);
   void handleBinaryOpcode(MOPUseType op1, MOPUseType op2,MachineInstr &MI);
