@@ -83,7 +83,7 @@ void EVMStackStatus::push(unsigned reg) {
 
 void EVMStackStatus::dump() const {
   LLVM_DEBUG({
-    dbgs() << "  Stack :  xRegion_size = " << getSizeOfXRegion() << "\n";
+    dbgs() << "  Stack :  x size: " << getSizeOfXRegion() << ". ";
     unsigned counter = 0;
     for (auto i = stackElements.rbegin(), e = stackElements.rend(); i != e; ++i) {
       unsigned idx = Register::virtReg2Index(*i);
@@ -374,6 +374,9 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
   }
 
   endOfBlockUpdates(MBB);
+  LLVM_DEBUG({
+    dbgs() << "    --------\n";
+  });
 }
 
 void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
@@ -382,7 +385,7 @@ void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
   }
   std::vector<MOPUseType> useTypes;
   unsigned numUses = calculateUseRegs(MI, useTypes);
-  assert(numUses > 2);
+  assert(useTypes.size() > 2);
 
   MachineBasicBlock::iterator insertPoint(MI);
   insertPoint++;
@@ -567,7 +570,7 @@ unsigned EVMStackAlloc::calculateUseRegs(MachineInstr &MI, std::vector<MOPUseTyp
     if (!MOP.isReg()) {
       LLVM_DEBUG({
         if (MI.getOpcode() == EVM::PUSH32_r) {
-          assert(MOP.isImm() || MOP.isCImm());
+          assert(MOP.isImm() || MOP.isCImm() || MOP.isGlobal());
           assert(MI.getNumExplicitOperands() - MI.getNumExplicitDefs() == 1);
         } else if (MI.getOpcode() == EVM::JUMP_r ||
                    MI.getOpcode() == EVM::JUMPI_r) {
@@ -610,8 +613,8 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
   unsigned index = calculateUseRegs(MI, useTypes);
 
   LLVM_DEBUG({
-    dbgs() << "      Uses: ";
     for (MOPUseType &MUT : useTypes) {
+      dbgs() << "      Uses: ";
       dbgs() << " %" << Register::virtReg2Index(MUT.second.reg)
              << " index: " << MUT.first
              << ", last use: " << MUT.second.isLastUse << ", "
@@ -621,8 +624,11 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
   });
 
   // Handle uses (back to front), insert DUPs, SWAPs if needed
-  unsigned numUses = index;
+  unsigned numUses = useTypes.size();
   switch (numUses) {
+    case 0: {
+      break;
+    }
     case 1: {
       // handle unary operands
       assert(useTypes.size() == 1);
@@ -643,6 +649,10 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
     }
   }
 
+  for (unsigned i = 0; i < numUses; ++i) {
+    stack.pop();
+  }
+
 }
 
 void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
@@ -658,12 +668,13 @@ void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
 }
 
 void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
+  assert(index > 0);
   MachineBasicBlock *MBB = MI.getParent();
   MachineFunction &MF = *MBB->getParent();
   MachineInstrBuilder dup = BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::DUP_r)).addImm(index);
   MBB->insert(MachineBasicBlock::iterator(MI), dup);
   LIS->InsertMachineInstrInMaps(*dup);
-  stack.dup(index);
+  stack.dup(index - 1);
 }
 
 void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, unsigned memSlot) {
@@ -956,9 +967,11 @@ void EVMStackAlloc::handleUnaryOpcode(EVMStackAlloc::MOPUseType op, MachineInstr
   } else {
     unsigned depth = stack.findRegDepth(reg);
     if (regIsLastUse(MOP)) {
-      insertSwapBefore(depth, MI);
+      if (depth != 0) {
+        insertSwapBefore(depth, MI);
+      }
     } else {
-      insertDupBefore(depth, MI);
+      insertDupBefore(depth + 1, MI);
     }
   }
 }
@@ -992,7 +1005,7 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
         insertSwapBefore(depth, MI);
       }
     } else {
-      insertDupBefore(depth, MI);
+      insertDupBefore(depth + 1, MI);
     }
     insertLoadFromMemoryBefore(reg1, MI, SA1.slot);
   }
@@ -1015,7 +1028,7 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
     } else {
       insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
       unsigned depth = stack.findRegDepth(reg1);
-      insertDupBefore(depth, MI);
+      insertDupBefore(depth + 1, MI);
     }
   }
 
@@ -1033,18 +1046,15 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
       // all last uses
       if (depth1 == 0 && depth2 == 1) {
         // do nothing
-      }
-      if (depth1 == 0 && depth2 != 1) {
+      } else if (depth1 == 0 && depth2 != 1) {
         // r2 is not in place:
         // A,X,B -S1-> X,A,B -S(depth2)-> B,A,X -S1-> A,B,X
         insertSwapBefore(1, MI);
         insertSwapBefore(depth2, MI);
         insertSwapBefore(1, MI);
-      }
-      if (depth1 != 0 && depth2 == 1) {
+      } else if (depth1 != 0 && depth2 == 1) {
         insertSwapBefore(depth1, MI);
-      } 
-      if (depth1 != 0 && depth2 != 1) {
+      } else if (depth1 != 0 && depth2 != 1) {
         if (depth1 == 1 && depth2 == 0) {
           insertSwapBefore(1, MI);
         } else {
@@ -1062,18 +1072,15 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
         // keep reg2 while consume depth1
         insertDupBefore(2, MI);
         insertSwapBefore(1, MI);
-      }
-      if (depth1 == 0 && depth2 != 1) {
+      } else if (depth1 == 0 && depth2 != 1) {
         // r2 is not in place
-        insertDupBefore(depth2, MI);
+        insertDupBefore(depth2 + 1, MI);
         depth1 = stack.findRegDepth(reg1);
         insertSwapBefore(1, MI);
-      }
-      if (depth1 != 0 && depth2 == 1) {
+      } else if (depth1 != 0 && depth2 == 1) {
         insertSwapBefore(depth1, MI);
-      }
-      if (depth1 != 0 && depth2 != 1) {
-        insertDupBefore(depth2, MI);
+      } else if (depth1 != 0 && depth2 != 1) {
+        insertDupBefore(depth2 + 1, MI);
         insertSwapBefore(1, MI);
         depth1 = stack.findRegDepth(reg1);
         insertSwapBefore(depth1, MI);
@@ -1085,34 +1092,31 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
       if (depth1 == 0 && depth2 == 1) {
         insertSwapBefore(1, MI);
         insertDupBefore(2, MI);
-      }
-      if (depth1 == 0 && depth2 != 1) {
+      } else if (depth1 == 0 && depth2 != 1) {
         // r2 is not in place
         // r1, x, r2 -S-> r2, r1, x -D-> r1, r2, r1, x
         insertSwapBefore(depth2, MI);
         insertDupBefore(1, MI);
-      }
-      if (depth1 != 0 && depth2 == 1) {
+      } else if (depth1 != 0 && depth2 == 1) {
         // r1 is not in place
         // xx, r2, r1 -S-> r2, xx, r1 -D-> r1,r2, xx, r1
         insertSwapBefore(depth2, MI);
         depth1 = stack.findRegDepth(reg1);
-        insertDupBefore(depth1, MI);
-      }
-      if (depth1 != 0 && depth2 != 1) {
+        insertDupBefore(depth1 + 1, MI);
+      } else if (depth1 != 0 && depth2 != 1) {
         if (depth2 != 0) {
           insertSwapBefore(depth1, MI);
         }
         // now reg2 is at top
         depth1 = stack.findRegDepth(reg1);
-        insertDupBefore(depth1, MI);
+        insertDupBefore(depth1 + 1, MI);
       }
     }
 
     if (!lastUse1 && !lastUse2) {
-      insertDupBefore(depth2, MI);
+      insertDupBefore(depth2 + 1, MI);
       depth1 = stack.findRegDepth(reg1);
-      insertDupBefore(depth1, MI);
+      insertDupBefore(depth1 + 1, MI);
     }
   }
 }
@@ -1136,7 +1140,7 @@ void EVMStackAlloc::handleArbitraryOpcode(std::vector<MOPUseType> useTypes,
     } else {
       assert(SA.region != NONSTACK);
       unsigned depth = stack.findRegDepth(reg);
-      insertDupBefore(depth, MI);
+      insertDupBefore(depth + 1, MI);
     }
   }
 
