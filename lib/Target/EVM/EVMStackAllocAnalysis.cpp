@@ -189,7 +189,7 @@ void EdgeSets::computeEdgeSets(MachineFunction *MF) {
 
       MachineBasicBlock::pred_iterator iter = ++MBB.succ_begin();
       while (iter != MBB.succ_end()) {
-        mergeEdgeSets({&MBB, first}, {&MBB, *iter});
+        mergeEdgeSets({&MBB, first}, {&MBB, *iter++});
       }
     }
   }
@@ -207,7 +207,7 @@ void EdgeSets::mergeEdgeSets(Edge edge1, Edge edge2) {
   // change edgeSet2 to edgeSet1
   for (std::pair<unsigned, unsigned> index2Set : edgeIndex2EdgeSet) {
     if (index2Set.second == edgeSet2) {
-      edgeIndex2EdgeSet.emplace(index2Set.first, edgeSet1);
+      edgeIndex2EdgeSet[index2Set.first] = edgeSet1;
     }
   }
   return;
@@ -219,6 +219,20 @@ EdgeSets::Edge EdgeSets::getEdge(unsigned edgeId) const {
   return result->second;
 }
 
+void EdgeSets::printEdge(Edge edge) const {
+  LLVM_DEBUG({
+    if (edge.first == NULL) {
+      dbgs() << "    EntryMBB"
+             << " -> MBB" << edge.second->getNumber() << "\n";
+    } else if (edge.second == NULL) {
+      dbgs() << "    MBB" << edge.first->getNumber() << " -> ExitMBB\n";
+    } else {
+      dbgs() << "    MBB" << edge.first->getNumber() << " -> MBB"
+             << edge.second->getNumber() << "\n";
+    }
+  });
+}
+
 void EdgeSets::dump() const {
   LLVM_DEBUG({
     dbgs() << "  Computed edge set: (size of edgesets: " << 0 << ")\n";
@@ -228,18 +242,8 @@ void EdgeSets::dump() const {
       unsigned esIndex = it.second;
       // find the Edges
       Edge edge = getEdge(edgeId);
-
-      if (edge.first == NULL) {
-        dbgs() << "    EntryMBB"
-               << " -> MBB" << edge.second->getNumber() << " : " << esIndex
-               << "\n";
-      } else if (edge.second == NULL) {
-        dbgs() << "    MBB" << edge.first->getNumber() << " -> ExitMBB"
-               << " : " << esIndex << "\n";
-      } else {
-        dbgs() << "    MBB" << edge.first->getNumber() << " -> MBB"
-               << edge.second->getNumber() << " : " << esIndex << "\n";
-      }
+      dbgs() << "    " << esIndex << " : ";
+      printEdge(edge);
     }
     dbgs() << "-------------------------------------------------\n";
   });
@@ -373,7 +377,7 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
     stack.dump();
   }
 
-  endOfBlockUpdates(MBB);
+  //endOfBlockUpdates(MBB);
   LLVM_DEBUG({
     dbgs() << "    --------\n";
   });
@@ -507,6 +511,8 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
     // This could greatly benefit from a stack machine specific optimization.
     if (liveIntervalWithinSameEdgeSet(defReg)) {
       // it is a def register, so we only care about out-going edges.
+      regAssignments.insert(
+          std::pair<unsigned, StackAssignment>(defReg, {X_STACK, 0}));
 
       LLVM_DEBUG(dbgs() << "    Allocating reg %"
                         << Register::virtReg2Index(defReg)
@@ -520,16 +526,20 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
              "Cannot allocate XRegion to empty edgeset.");
       unsigned edgesetIndex =
           edgeSets.getEdgeSetIndex({ThisMBB, *(ThisMBB->succ_begin())});
-      allocateXRegion(edgesetIndex,defReg);
+      allocateXRegion(edgesetIndex, defReg);
 
       stack.push(defReg);
       return;
     }
   } else {
     // Everything else goes to memory
-    insertStoreToMemoryAfter(defReg, MI, sa.slot);
     currentStackStatus.M.insert(defReg);
-    allocateMemorySlot(defReg);
+    unsigned slot = allocateMemorySlot(defReg);
+    insertStoreToMemoryAfter(defReg, MI, slot);
+    LLVM_DEBUG({
+      dbgs() << "    Allocating %" << Register::virtReg2Index(defReg)
+             << " to memslot: " << slot << "\n";
+    });
     return;
   }
 }
@@ -593,13 +603,16 @@ unsigned EVMStackAlloc::calculateUseRegs(MachineInstr &MI, std::vector<MOPUseTyp
       isLastUse = true;
     }
 
+    RegUseType RUT;
     if (SA.region == NONSTACK) {
       // we need to handle memory types differently
       isMemUse = true;
+      RUT = {isLastUse, isMemUse, SA.slot, useReg};
+    } else {
+      unsigned depth = stack.findRegDepth(useReg);
+      RUT = {isLastUse, isMemUse, depth, useReg};
     }
-    unsigned depth = stack.findRegDepth(useReg);
 
-    RegUseType RUT = {isLastUse, isMemUse, depth, useReg};
     useTypes.push_back({index, RUT});
     ++index;
   }
@@ -687,7 +700,6 @@ void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, uns
   LIS->InsertMachineInstrInMaps(*putlocal);
 
   // TODO: insert this new put local to LiveIntervals
-
   LLVM_DEBUG(dbgs() << "  PUTLOCAL(" << memSlot << ") => %" << memSlot
                     << "  is inserted.\n");
 }
@@ -796,17 +808,26 @@ bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP,
 unsigned EVMStackAlloc::allocateMemorySlot(unsigned reg) {
   assert(reg != 0 && "Incoming registers cannot be zero.");
   // first, find if there is an empty slot:
+  unsigned slot = 0;
   for (unsigned i = 0; i < memoryAssignment.size(); ++i) {
     // here we let 0 represent an empty slot
     if (memoryAssignment[i] == 0) {
       memoryAssignment[i] = reg;
-      return i;
+      slot = i;
+      break;
     }
   }
 
-  // now we need to expand the memory:
-  memoryAssignment.push_back(reg);
-  return (memoryAssignment.size() - 1);
+  regAssignments.insert(
+      std::pair<unsigned, StackAssignment>(reg, {NONSTACK, slot}));
+
+  if (slot == 0) {
+    memoryAssignment.push_back(reg);
+    return (memoryAssignment.size() - 1);
+  } else {
+    return slot;
+  }
+
 }
 
 void EVMStackAlloc::deallocateMemorySlot(unsigned reg) {
@@ -828,6 +849,7 @@ unsigned EVMStackAlloc::allocateXRegion(unsigned setIndex, unsigned reg) {
          "Inserting duplicate element in X region.");
 
   x_region.push_back(reg);
+  stack.pushElementToXRegion();
   return x_region.size();
 }
 
@@ -948,8 +970,10 @@ void EVMStackAlloc::handleOperandLiveness(RegUseType useType, MachineOperand &MO
     }
     if (SA.region == X_STACK) {
       currentStackStatus.X.erase(reg);
+      stack.popElementFromXRegion();
     }
   }
+
 }
 
 void EVMStackAlloc::handleUnaryOpcode(EVMStackAlloc::MOPUseType op, MachineInstr &MI) {

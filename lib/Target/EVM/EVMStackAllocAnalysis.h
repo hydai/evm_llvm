@@ -72,6 +72,7 @@ public:
   }
 
   void dump() const;
+  void printEdge(Edge edge) const;
 
 private:
   // Index :: EdgeSet
@@ -104,6 +105,14 @@ public:
   }
   unsigned getSizeOfLRegion() const {
     return getStackDepth() - sizeOfXRegion;
+  }
+
+  void pushElementToXRegion() {
+    ++sizeOfXRegion;
+  }
+
+  void popElementFromXRegion() {
+    --sizeOfXRegion;
   }
 
   bool empty() const {
