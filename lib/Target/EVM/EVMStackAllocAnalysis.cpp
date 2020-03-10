@@ -352,7 +352,7 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
       
       std::vector<unsigned> &another = edgeset2assignment[edgetSetIndex];
       assert(another == xStack && "Two X Stack arrangements are different!");
-      consolidateXRegionForEdgeSet(edgetSetIndex);
+      //consolidateXRegionForEdgeSet(edgetSetIndex);
     }
 
     // TODO: merge edgeset
@@ -384,7 +384,7 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
     stack.dump();
   }
 
-  //endOfBlockUpdates(MBB);
+  endOfBlockUpdates(MBB);
   LLVM_DEBUG({
     dbgs() << "    --------\n";
   });
@@ -395,7 +395,6 @@ void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
     return;
   }
   std::vector<MOPUseType> useTypes;
-  unsigned numUses = calculateUseRegs(MI, useTypes);
   assert(useTypes.size() > 2);
 
   MachineBasicBlock::iterator insertPoint(MI);
@@ -457,15 +456,26 @@ bool EVMStackAlloc::regIsLastUse(const MachineOperand &MOP) const {
   
   // iterate over all uses
   const MachineInstr *MI = MOP.getParent();
+  const MachineBasicBlock *MBB = MI->getParent();
   SlotIndex MISlot = LIS->getInstructionIndex(*MI).getRegSlot();
-  SlotIndex BBEndSlot = LIS->getMBBEndIdx(MI->getParent());
+  SlotIndex BBEndSlot = LIS->getMBBEndIdx(MBB);
   for (auto &Use : MRI->use_nodbg_operands(reg)) {
     MachineInstr * UseMI = Use.getParent();
     SlotIndex UseSlot = LIS->getInstructionIndex(*UseMI).getRegSlot();
 
+
+    // check if the same BB has subsequent uses.
     if (SlotIndex::isEarlierInstr(MISlot, UseSlot) &&
         SlotIndex::isEarlierInstr(UseSlot, BBEndSlot)) {
       return false;
+    }
+
+    // check if all sucessors have not uses
+    for (auto SuccMBB : MBB->successors()) {
+      SlotIndex SuccBegin = LIS->getMBBStartIdx(SuccMBB);
+      if (SlotIndex::isEarlierInstr(SuccBegin, UseSlot)) {
+        return false;
+      }
     }
   }
   return true;
@@ -482,9 +492,6 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
   }
 
   unsigned defReg = getDefRegister(MI);
-
-  // TODO: insert to SA
-  StackAssignment sa;
 
   // case: multiple defs:
   // if there are multiple defines, then it goes to memory
@@ -538,17 +545,17 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
       stack.push(defReg);
       return;
     }
-  } else {
-    // Everything else goes to memory
-    currentStackStatus.M.insert(defReg);
-    unsigned slot = allocateMemorySlot(defReg);
-    insertStoreToMemoryAfter(defReg, MI, slot);
-    LLVM_DEBUG({
-      dbgs() << "    Allocating %" << Register::virtReg2Index(defReg)
-             << " to memslot: " << slot << "\n";
-    });
-    return;
   }
+
+  // Everything else goes to memory
+  currentStackStatus.M.insert(defReg);
+  unsigned slot = allocateMemorySlot(defReg);
+  insertStoreToMemoryAfter(defReg, MI, slot);
+  LLVM_DEBUG({
+    dbgs() << "    Allocating %" << Register::virtReg2Index(defReg)
+           << " to memslot: " << slot << "\n";
+  });
+  return;
 }
 
 // We only look at uses.
@@ -630,7 +637,7 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
 
   // Collect reg use info
   std::vector<MOPUseType> useTypes;
-  unsigned index = calculateUseRegs(MI, useTypes);
+  calculateUseRegs(MI, useTypes);
 
   LLVM_DEBUG({
     for (MOPUseType &MUT : useTypes) {
@@ -841,9 +848,13 @@ void EVMStackAlloc::deallocateMemorySlot(unsigned reg) {
   for (unsigned i = 0; i < memoryAssignment.size(); ++i) {
     if (reg == memoryAssignment[i]) {
       memoryAssignment[i] = 0;
+      LLVM_DEBUG(dbgs() << "    deallocate %" << Register::virtReg2Index(reg)
+                        << " at memslot: " << i << "\n");
       return;
     }
   }
+  LLVM_DEBUG(dbgs() << "    Unfound register %" << Register::virtReg2Index(reg)
+                    << "\n");
   llvm_unreachable("Cannot find allocated memory slot");
 }
 
@@ -861,8 +872,6 @@ unsigned EVMStackAlloc::allocateXRegion(unsigned setIndex, unsigned reg) {
 }
 
 bool EVMStackAlloc::hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) const {
-  const MachineBasicBlock* MBB = MI.getParent();
-
   // if this is the only use, then for sure it is the last use in MBB.
   assert(!MRI->use_nodbg_empty(reg) && "Empty use registers should not have a use.");
   if (MRI->hasOneUse(reg)) {
@@ -939,6 +948,7 @@ bool EVMStackAlloc::runOnMachineFunction(MachineFunction &MF) {
 }
 
 bool EVMStackAlloc::successorsHaveUses(unsigned reg, const MachineInstr &MI) const {
+  /*
   const MachineBasicBlock* MBB = MI.getParent();
 
   // It is possible that we some NextMBB will not have uses. In this case we
@@ -947,8 +957,9 @@ bool EVMStackAlloc::successorsHaveUses(unsigned reg, const MachineInstr &MI) con
   for (const MachineBasicBlock* NextMBB : MBB->successors()) {
     llvm_unreachable("unimplemented");
   }
+  */
 
-  return false;
+  return true;
 }
 
 void EVMStackAlloc::loadOperandFromMemoryIfNeeded(RegUseType op, MachineInstr &MI) {
