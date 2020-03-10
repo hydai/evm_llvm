@@ -325,8 +325,15 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
 
   // initialize the stack using x stack.
   for (unsigned i = 0; i < xStack.size(); ++i) {
-    stack.push(xStack[i]);
+    unsigned reg = xStack[i];
+    stack.push(reg);
+    // also need to update X Stack
+    StackAssignment SA = regAssignments.lookup(reg);
+    if (SA.region == X_STACK) {
+      stack.pushElementToXRegion();
+    }
   }
+
 }
 
 void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
@@ -344,7 +351,7 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
       // need to arrange them so they are the same
       
       std::vector<unsigned> &another = edgeset2assignment[edgetSetIndex];
-      assert(another == xStack && "Two X Stack arrankkgements are different!");
+      assert(another == xStack && "Two X Stack arrangements are different!");
       consolidateXRegionForEdgeSet(edgetSetIndex);
     }
 
@@ -966,7 +973,7 @@ void EVMStackAlloc::handleOperandLiveness(RegUseType useType, MachineOperand &MO
     // X region.
     if (SA.region == NONSTACK) {
       currentStackStatus.M.erase(reg);
-      deallocateMemorySlot(SA.slot);
+      deallocateMemorySlot(reg);
     }
     if (SA.region == X_STACK) {
       currentStackStatus.X.erase(reg);
