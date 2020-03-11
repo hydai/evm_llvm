@@ -321,7 +321,8 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
   unsigned setIndex = edgeSets.getEdgeSetIndex(edge);
 
   assert(edgeset2assignment.find(setIndex) != edgeset2assignment.end());
-  std::vector<unsigned> xStack = edgeset2assignment[setIndex];
+  ActiveStack xStack = edgeset2assignment[setIndex].first;
+  MemorySlots memslots = edgeset2assignment[setIndex].second;
 
   // initialize the stack using x stack.
   for (unsigned i = 0; i < xStack.size(); ++i) {
@@ -333,7 +334,9 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
       stack.pushElementToXRegion();
     }
   }
-
+  
+  // also initialize the memory slots;
+  memoryAssignment = memslots;
 }
 
 void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
@@ -344,20 +347,26 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
   std::vector<unsigned> xStack(stack.getStackElements());
 
   for (MachineBasicBlock *NextMBB : MBB->successors()) {
-    unsigned edgetSetIndex = edgeSets.getEdgeSetIndex({MBB, NextMBB});
+    unsigned edgeSetIndex = edgeSets.getEdgeSetIndex({MBB, NextMBB});
 
-    if (edgeset2assignment.find(edgetSetIndex) != edgeset2assignment.end()) {
+    /*
+    if (edgeset2assignment.find(edgeSetIndex) != edgeset2assignment.end()) {
       // We've already have an x stack assignment previously. so now we will
       // need to arrange them so they are the same
       
-      std::vector<unsigned> &another = edgeset2assignment[edgetSetIndex];
+      ActiveStack &another = edgeset2assignment[edgeSetIndex].first;
+      MemorySlots memslots = edgeset2assignment[edgeSetIndex].second;
       assert(another == xStack && "Two X Stack arrangements are different!");
+      assert(memslots == memoryAssignment && "Two memory arrangements are different!");
       //consolidateXRegionForEdgeSet(edgetSetIndex);
     }
+    */
 
     // TODO: merge edgeset
-    edgeset2assignment.insert(
-        std::pair<unsigned, std::vector<unsigned>>(edgetSetIndex, xStack));
+    EdgeSetAssignment EA = {stack.getStackElements(), memoryAssignment};
+    edgeset2assignment.erase(edgeSetIndex);
+    edgeset2assignment[edgeSetIndex] = EA;
+    break;
   }
 }
 
@@ -394,8 +403,10 @@ void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
   if (MI.getNumExplicitOperands() - MI.getNumExplicitDefs() <= 2) {
     return;
   }
+
   std::vector<MOPUseType> useTypes;
-  assert(useTypes.size() > 2);
+  unsigned uses = calculateUseRegs(MI, useTypes);
+  assert(uses > 2 && useTypes.size() > 2);
 
   MachineBasicBlock::iterator insertPoint(MI);
   insertPoint++;
@@ -405,7 +416,7 @@ void EVMStackAlloc::cleanUpDeadRegisters(MachineInstr &MI) {
       insertSwapBefore(depth, *insertPoint);
     }
     insertPopBefore(*insertPoint);
-  }
+    }
 } 
 
 StackAssignment EVMStackAlloc::getStackAssignment(unsigned reg) const {
@@ -861,7 +872,8 @@ void EVMStackAlloc::deallocateMemorySlot(unsigned reg) {
 unsigned EVMStackAlloc::allocateXRegion(unsigned setIndex, unsigned reg) {
   // Each entry of an edge set should contain the same
   // X region layout
-  std::vector<unsigned> &x_region = edgeset2assignment[setIndex];
+  EdgeSetAssignment ESA = edgeset2assignment[setIndex];
+  std::vector<unsigned> &x_region = ESA.first;
 
   assert(std::find(x_region.begin(), x_region.end(), reg) == x_region.end() &&
          "Inserting duplicate element in X region.");

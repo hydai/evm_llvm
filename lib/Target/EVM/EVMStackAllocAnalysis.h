@@ -203,15 +203,24 @@ private:
 
   // record assignments of each virtual register 
   DenseMap<unsigned, StackAssignment> regAssignments;
+
+  // Records register assignment info, used in symbolic execution.
   StackStatus currentStackStatus;
 
-  // This is used to find stack locations
+  // This is used in our symbolic execution to track stack arrangements
   EVMStackStatus stack;
 
-  std::vector<unsigned> memoryAssignment;
+  // Map: stack slot -> register
+  typedef std::vector<unsigned> ActiveStack;
+  // Map:: memory slot -> register
+  typedef std::vector<unsigned> MemorySlots;
+
+  typedef std::pair<ActiveStack, MemorySlots> EdgeSetAssignment;
+
+  MemorySlots memoryAssignment;
 
   // map: edgeset -> Stack Assignment
-  std::map<unsigned, std::vector<unsigned>> edgeset2assignment;
+  std::map<unsigned, EdgeSetAssignment> edgeset2assignment;
 
   void initialize();
 
