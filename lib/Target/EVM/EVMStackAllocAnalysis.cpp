@@ -561,6 +561,9 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
   // Everything else goes to memory
   currentStackStatus.M.insert(defReg);
   unsigned slot = allocateMemorySlot(defReg);
+  regAssignments.insert(
+      std::pair<unsigned, StackAssignment>(defReg, {NONSTACK, slot}));
+
   insertStoreToMemoryAfter(defReg, MI, slot);
   LLVM_DEBUG({
     dbgs() << "    Allocating %" << Register::virtReg2Index(defReg)
@@ -843,11 +846,9 @@ unsigned EVMStackAlloc::allocateMemorySlot(unsigned reg) {
     }
   }
 
-  regAssignments.insert(
-      std::pair<unsigned, StackAssignment>(reg, {NONSTACK, slot}));
-
   if (slot == 0) {
     memoryAssignment.push_back(reg);
+    MFI->updateMemoryFrameSize(memoryAssignment.size());
     return (memoryAssignment.size() - 1);
   } else {
     return slot;
@@ -934,7 +935,10 @@ void EVMStackAlloc::pruneStackDepth() {
     vecRegs = &currentStackStatus.L;
   }
   spillingCandidate = findSpillingCandidate(*vecRegs);
-  allocateMemorySlot(spillingCandidate);
+  unsigned slot = allocateMemorySlot(spillingCandidate);
+
+  regAssignments.insert(std::pair<unsigned, StackAssignment>(spillingCandidate,
+                                                             {NONSTACK, slot}));
 }
 
 unsigned EVMStackAlloc::findSpillingCandidate(std::set<unsigned> &vecRegs) const {
@@ -955,6 +959,7 @@ bool EVMStackAlloc::runOnMachineFunction(MachineFunction &MF) {
   TII = MF.getSubtarget<EVMSubtarget>().getInstrInfo(); 
   LIS = &getAnalysis<LiveIntervals>();
   MRI = &MF.getRegInfo();
+  MFI = MF.getInfo<EVMMachineFunctionInfo>();
   allocateRegistersToStack(MF);
   return true;
 }

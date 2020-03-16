@@ -13,6 +13,7 @@
 
 #include "EVM.h"
 #include "EVMTargetMachine.h"
+#include "EVMMachineFunctionInfo.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
@@ -221,6 +222,8 @@ private:
 
   // map: edgeset -> Stack Assignment
   std::map<unsigned, EdgeSetAssignment> edgeset2assignment;
+
+  EVMMachineFunctionInfo *MFI;
 
   void initialize();
 
