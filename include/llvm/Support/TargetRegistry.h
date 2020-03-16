@@ -101,6 +101,11 @@ MCStreamer *createWasmStreamer(MCContext &Ctx,
                                std::unique_ptr<MCObjectWriter> &&OW,
                                std::unique_ptr<MCCodeEmitter> &&CE,
                                bool RelaxAll);
+MCStreamer *createEVMStreamer(MCContext &Ctx,
+                              std::unique_ptr<MCAsmBackend> &&TAB,
+                              std::unique_ptr<MCObjectWriter> &&OW,
+                              std::unique_ptr<MCCodeEmitter> &&CE,
+                              bool RelaxAll);
 
 MCRelocationInfo *createMCRelocationInfo(const Triple &TT, MCContext &Ctx);
 
@@ -174,6 +179,11 @@ public:
                       std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll,
                       bool IncrementalLinkerCompatible);
   using WasmStreamerCtorTy =
+      MCStreamer *(*)(const Triple &T, MCContext &Ctx,
+                      std::unique_ptr<MCAsmBackend> &&TAB,
+                      std::unique_ptr<MCObjectWriter> &&OW,
+                      std::unique_ptr<MCCodeEmitter> &&Emitter, bool RelaxAll);
+  using EVMStreamerCtorTy =
       MCStreamer *(*)(const Triple &T, MCContext &Ctx,
                       std::unique_ptr<MCAsmBackend> &&TAB,
                       std::unique_ptr<MCObjectWriter> &&OW,
@@ -265,6 +275,7 @@ private:
   MachOStreamerCtorTy MachOStreamerCtorFn = nullptr;
   ELFStreamerCtorTy ELFStreamerCtorFn = nullptr;
   WasmStreamerCtorTy WasmStreamerCtorFn = nullptr;
+  EVMStreamerCtorTy EVMStreamerCtorFn = nullptr;
 
   /// Construction function for this target's null TargetStreamer, if
   /// registered (default = nullptr).
@@ -505,7 +516,17 @@ public:
         S = createWasmStreamer(Ctx, std::move(TAB), std::move(OW),
                                std::move(Emitter), RelaxAll);
       break;
+    case Triple::EVMBinary:
+      if (EVMStreamerCtorFn)
+        S = EVMStreamerCtorFn(T, Ctx, std::move(TAB), std::move(OW),
+                              std::move(Emitter), RelaxAll);
+      else
+        S = createEVMStreamer(Ctx, std::move(TAB), std::move(OW),
+                              std::move(Emitter), RelaxAll);
+      break;
     }
+
+
     if (ObjectTargetStreamerCtorFn)
       ObjectTargetStreamerCtorFn(*S, STI);
     return S;

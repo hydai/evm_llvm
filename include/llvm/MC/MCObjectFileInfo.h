@@ -381,7 +381,7 @@ public:
     return EHFrameSection;
   }
 
-  enum Environment { IsMachO, IsELF, IsCOFF, IsWasm };
+  enum Environment { IsMachO, IsELF, IsCOFF, IsWasm, IsEVM };
   Environment getObjectFileType() const { return Env; }
 
   bool isPositionIndependent() const { return PositionIndependent; }
@@ -397,6 +397,7 @@ private:
   void initELFMCObjectFileInfo(const Triple &T, bool Large);
   void initCOFFMCObjectFileInfo(const Triple &T);
   void initWasmMCObjectFileInfo(const Triple &T);
+  void initEVMMCObjectFileInfo(const Triple &T);
   MCSection *getDwarfComdatSection(const char *Name, uint64_t Hash) const;
 
 public:

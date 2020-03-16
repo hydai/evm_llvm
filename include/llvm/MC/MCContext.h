@@ -50,6 +50,7 @@ namespace llvm {
   class MCSectionELF;
   class MCSectionMachO;
   class MCSectionWasm;
+  class MCSectionEVM;
   class MCStreamer;
   class MCSymbol;
   class MCSymbolELF;
@@ -92,6 +93,7 @@ namespace llvm {
     SpecificBumpPtrAllocator<MCSectionELF> ELFAllocator;
     SpecificBumpPtrAllocator<MCSectionMachO> MachOAllocator;
     SpecificBumpPtrAllocator<MCSectionWasm> WasmAllocator;
+    SpecificBumpPtrAllocator<MCSectionEVM> EVMAllocator;
 
     /// Bindings of names to symbols.
     SymbolTable Symbols;
@@ -155,6 +157,9 @@ namespace llvm {
 
     /// Generate dwarf debugging info for assembly source files.
     bool GenDwarfForAssembly = false;
+
+    /// Generate EVM binary metadata information.
+    bool GenEVMMetadataForAssembly = false;
 
     /// The current dwarf file number when generate dwarf debugging info for
     /// assembly source files.
@@ -300,6 +305,9 @@ namespace llvm {
 
     void setAllowTemporaryLabels(bool Value) { AllowTemporaryLabels = Value; }
     void setUseNamesOnTempLabels(bool Value) { UseNamesOnTempLabels = Value; }
+
+    bool getGenEVMMetadataForAssembly() { return GenEVMMetadataForAssembly; }
+    void setGenEVMMetaDataForAssembly(bool Value) { GenEVMMetadataForAssembly = Value; }
 
     /// \name Module Lifetime Management
     /// @{

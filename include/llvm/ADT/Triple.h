@@ -54,6 +54,7 @@ public:
     avr,            // AVR: Atmel AVR microcontroller
     bpfel,          // eBPF or extended BPF or 64-bit BPF (little endian)
     bpfeb,          // eBPF or extended BPF or 64-bit BPF (big endian)
+    evm,            // Ethereum Virtual Machine
     hexagon,        // Hexagon: hexagon
     mips,           // MIPS: mips, mipsallegrex, mipsr6
     mipsel,         // MIPSEL: mipsel, mipsallegrexe, mipsr6el
@@ -220,6 +221,7 @@ public:
     ELF,
     MachO,
     Wasm,
+    EVMBinary,
   };
 
 private:
@@ -618,6 +620,11 @@ public:
   /// Tests whether the OS uses the Wasm binary format.
   bool isOSBinFormatWasm() const {
     return getObjectFormat() == Triple::Wasm;
+  }
+
+  /// Tests whether the OS uses the EVMBinary binary format.
+  bool isOSBinFormatEVMBinary() const {
+    return getObjectFormat() == Triple::EVMBinary;
   }
 
   /// Tests whether the target is the PS4 CPU

@@ -12,6 +12,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/MC/MCCodePadder.h"
 #include "llvm/MC/MCELFObjectWriter.h"
+#include "llvm/MC/MCEVMObjectWriter.h"
 #include "llvm/MC/MCFixupKindInfo.h"
 #include "llvm/MC/MCMachObjectWriter.h"
 #include "llvm/MC/MCObjectWriter.h"
@@ -44,6 +45,9 @@ MCAsmBackend::createObjectWriter(raw_pwrite_stream &OS) const {
   case Triple::Wasm:
     return createWasmObjectWriter(cast<MCWasmObjectTargetWriter>(std::move(TW)),
                                   OS);
+  case Triple::EVMBinary:
+    return createEVMObjectWriter(cast<MCEVMObjectTargetWriter>(std::move(TW)),
+                                 OS);
   default:
     llvm_unreachable("unexpected object format");
   }

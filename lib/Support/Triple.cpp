@@ -29,6 +29,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
   case avr:            return "avr";
   case bpfel:          return "bpfel";
   case bpfeb:          return "bpfeb";
+  case evm:            return "evm";
   case hexagon:        return "hexagon";
   case mips:           return "mips";
   case mipsel:         return "mipsel";
@@ -539,6 +540,7 @@ static Triple::ObjectFormatType parseFormat(StringRef EnvironmentName) {
     .EndsWith("elf", Triple::ELF)
     .EndsWith("macho", Triple::MachO)
     .EndsWith("wasm", Triple::Wasm)
+    .EndsWith("evm", Triple::EVMBinary)
     .Default(Triple::UnknownObjectFormat);
 }
 
@@ -623,6 +625,7 @@ static StringRef getObjectFormatTypeName(Triple::ObjectFormatType Kind) {
   case Triple::ELF: return "elf";
   case Triple::MachO: return "macho";
   case Triple::Wasm: return "wasm";
+  case Triple::EVMBinary: return "evm";
   }
   llvm_unreachable("unknown object format type");
 }
@@ -650,6 +653,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::avr:
   case Triple::bpfeb:
   case Triple::bpfel:
+  case Triple::evm:
   case Triple::hexagon:
   case Triple::lanai:
   case Triple::hsail:
@@ -1262,6 +1266,8 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::wasm64:
   case llvm::Triple::renderscript64:
     return 64;
+  case llvm::Triple::evm:
+    return 256;
   }
   llvm_unreachable("Invalid architecture value");
 }
@@ -1337,6 +1343,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::spir64:         T.setArch(Triple::spir);    break;
   case Triple::wasm64:         T.setArch(Triple::wasm32);  break;
   case Triple::renderscript64: T.setArch(Triple::renderscript32); break;
+  case Triple::evm:            T.setArch(Triple::evm);     break;
   }
   return T;
 }
@@ -1347,6 +1354,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::UnknownArch:
   case Triple::arc:
   case Triple::avr:
+  case Triple::evm:
   case Triple::hexagon:
   case Triple::kalimba:
   case Triple::lanai:

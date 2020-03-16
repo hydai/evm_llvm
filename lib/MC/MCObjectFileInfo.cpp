@@ -756,6 +756,10 @@ void MCObjectFileInfo::initWasmMCObjectFileInfo(const Triple &T) {
   // TODO: Define more sections.
 }
 
+void MCObjectFileInfo::initEVMMCObjectFileInfo(const Triple &T) {
+    // TODO: implement the details.
+}
+
 void MCObjectFileInfo::InitMCObjectFileInfo(const Triple &TheTriple, bool PIC,
                                             MCContext &ctx,
                                             bool LargeCodeModel) {
@@ -801,6 +805,10 @@ void MCObjectFileInfo::InitMCObjectFileInfo(const Triple &TheTriple, bool PIC,
   case Triple::Wasm:
     Env = IsWasm;
     initWasmMCObjectFileInfo(TT);
+    break;
+  case Triple::EVMBinary:
+    Env = IsWasm;
+    initEVMMCObjectFileInfo(TT);
     break;
   case Triple::UnknownObjectFormat:
     report_fatal_error("Cannot initialize MC for unknown object file format.");

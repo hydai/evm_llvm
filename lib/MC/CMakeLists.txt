@@ -6,6 +6,7 @@ add_llvm_library(LLVMMC
   MCAsmInfoCOFF.cpp
   MCAsmInfoDarwin.cpp
   MCAsmInfoELF.cpp
+  MCAsmInfoEVM.cpp
   MCAsmInfoWasm.cpp
   MCAsmMacro.cpp
   MCAsmStreamer.cpp
@@ -17,6 +18,8 @@ add_llvm_library(LLVMMC
   MCDwarf.cpp
   MCELFObjectTargetWriter.cpp
   MCELFStreamer.cpp
+  MCEVMObjectTargetWriter.cpp
+  MCEVMStreamer.cpp
   MCExpr.cpp
   MCFragment.cpp
   MCInst.cpp
@@ -36,6 +39,7 @@ add_llvm_library(LLVMMC
   MCSection.cpp
   MCSectionCOFF.cpp
   MCSectionELF.cpp
+  MCSectionEVM.cpp
   MCSectionMachO.cpp
   MCSectionWasm.cpp
   MCStreamer.cpp

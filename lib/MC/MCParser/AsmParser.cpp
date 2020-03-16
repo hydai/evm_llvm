@@ -674,6 +674,7 @@ private:
 namespace llvm {
 
 extern MCAsmParserExtension *createDarwinAsmParser();
+extern MCAsmParserExtension *createEVMAsmParser();
 extern MCAsmParserExtension *createELFAsmParser();
 extern MCAsmParserExtension *createCOFFAsmParser();
 extern MCAsmParserExtension *createWasmAsmParser();
@@ -708,6 +709,8 @@ AsmParser::AsmParser(SourceMgr &SM, MCContext &Ctx, MCStreamer &Out,
     break;
   case MCObjectFileInfo::IsWasm:
     PlatformParser.reset(createWasmAsmParser());
+  case MCObjectFileInfo::IsEVM:
+    PlatformParser.reset(createEVMAsmParser());
     break;
   }
 
