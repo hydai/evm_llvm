@@ -46,8 +46,8 @@ void EVMStackStatus::swap(unsigned depth) {
       unsigned second = stackElements.rbegin()[depth];
       unsigned fst_idx = Register::virtReg2Index(first);
       unsigned snd_idx = Register::virtReg2Index(second);
-      dbgs() << "    SWAP" << depth << ": Swapping %" << fst_idx << " and %"
-             << snd_idx << "\n";
+      dbgs() << "    >>> SWAP" << depth << ": (%" << fst_idx << "<-> %" << snd_idx
+             << ")\n";
     });
     std::iter_swap(stackElements.rbegin(), stackElements.rbegin() + depth);
 }
@@ -57,7 +57,7 @@ void EVMStackStatus::dup(unsigned depth) {
 
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(elem);
-    dbgs() << "    Duplicating " << idx << " at depth " << depth << "\n";
+    dbgs() << "    >>> DUP" << depth << "(%" << idx << ")\n";
   });
 
   stackElements.push_back(elem);
@@ -67,7 +67,7 @@ unsigned EVMStackStatus::pop() {
   unsigned reg = stackElements.back();
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(reg);
-    dbgs() << "    Popping %" << idx << " from stack.\n";
+    dbgs() << "    >>> POP (%" << idx << ")\n";
   });
   stackElements.pop_back();
   return reg;
@@ -76,7 +76,7 @@ unsigned EVMStackStatus::pop() {
 void EVMStackStatus::push(unsigned reg) {
   LLVM_DEBUG({
     unsigned idx = Register::virtReg2Index(reg);
-    dbgs() << "    Pushing %" << idx << " to top of stack.\n";
+    dbgs() << "    >>> PUSH %" << idx << "\n";
   });
   stackElements.push_back(reg);
 }
@@ -84,7 +84,7 @@ void EVMStackStatus::push(unsigned reg) {
 
 void EVMStackStatus::dump() const {
   LLVM_DEBUG({
-    dbgs() << "  Stack : (";
+    dbgs() << "    Stack : (";
     unsigned counter = 0;
     for (auto i = stackElements.rbegin(), e = stackElements.rend(); i != e; ++i) {
       unsigned idx = Register::virtReg2Index(*i);
@@ -366,7 +366,7 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
     const LiveInterval &LI = LIS->getInterval(reg);
     if (!LI.liveAt(MBBBeginSlot)) {
       LLVM_DEBUG({
-        dbgs() << "  Memslot: free up %" << Register::virtReg2Index(reg)
+        dbgs() << "    Memslot: free up %" << Register::virtReg2Index(reg)
                << "\n";
       });
       deallocateMemorySlot(reg);
@@ -613,7 +613,7 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
     if (MRI->use_nodbg_empty(defReg)) {
       regAssignments.insert(std::pair<unsigned, StackAssignment>(
           defReg, {NO_ALLOCATION, 0}));
-      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+      LLVM_DEBUG(dbgs() << "    Allocating %"
                         << Register::virtReg2Index(defReg)
                         << " to NO_ALLOCATION.\n");
       insertPopAfter(MI);
@@ -625,7 +625,7 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
       // record assignment
       regAssignments.insert(
           std::pair<unsigned, StackAssignment>(defReg, {L_STACK, 0}));
-      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+      LLVM_DEBUG(dbgs() << "    Allocating %"
                         << Register::virtReg2Index(defReg)
                         << " to LOCAL STACK.\n");
       // update stack status
@@ -641,9 +641,9 @@ void EVMStackAlloc::handleDef(MachineInstr &MI) {
       regAssignments.insert(
           std::pair<unsigned, StackAssignment>(defReg, {X_STACK, 0}));
 
-      LLVM_DEBUG(dbgs() << "    Allocating reg %"
+      LLVM_DEBUG(dbgs() << "    Allocating %"
                         << Register::virtReg2Index(defReg)
-                        << " to TRANSFER STACK.\n");
+                        << " to X STACK.\n");
 
       // TODO: allocate X regions to the following code
       MachineBasicBlock *ThisMBB = const_cast<MachineInstr &>(MI).getParent();
@@ -809,8 +809,8 @@ void EVMStackAlloc::insertLoadFromMemoryBefore(unsigned reg, MachineInstr &MI,
   LIS->InsertMachineInstrInMaps(*getlocal);
   stack.push(reg);
 
-  LLVM_DEBUG(dbgs() << "  %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
-                    << memSlot << ") inserted.\n");
+  LLVM_DEBUG(dbgs() << "    >>> %" << Register::virtReg2Index(reg) << " <= GETLOCAL("
+                    << memSlot << ")\n");
 }
 
 void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
@@ -823,18 +823,21 @@ void EVMStackAlloc::insertDupBefore(unsigned index, MachineInstr &MI) {
   stack.dup(index - 1);
 }
 
-void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI, unsigned memSlot) {
+void EVMStackAlloc::insertStoreToMemoryAfter(unsigned reg, MachineInstr &MI,
+                                             unsigned memSlot) {
   MachineBasicBlock *MBB = MI.getParent();
   MachineFunction &MF = *MBB->getParent();
 
   MachineInstrBuilder putlocal =
-      BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::pPUTLOCAL_r)).addReg(reg).addImm(memSlot);
+      BuildMI(MF, MI.getDebugLoc(), TII->get(EVM::pPUTLOCAL_r))
+          .addReg(reg)
+          .addImm(memSlot);
   MBB->insertAfter(MachineBasicBlock::iterator(MI), putlocal);
   LIS->InsertMachineInstrInMaps(*putlocal);
 
   // TODO: insert this new put local to LiveIntervals
-  LLVM_DEBUG(dbgs() << "  PUTLOCAL(" << memSlot << ") => %" << memSlot
-                    << "  is inserted.\n");
+  LLVM_DEBUG(dbgs() << "    >>> PUTLOCAL(" << memSlot << ") <= %"
+                    << Register::virtReg2Index(reg) << "\n");
 }
 
 void EVMStackAlloc::insertPopAfter(MachineInstr &MI) {
