@@ -96,7 +96,7 @@ public:
   void swap(unsigned depth);
   void dup(unsigned depth);
   void push(unsigned reg);
-  void pop();
+  unsigned pop();
 
   unsigned get(unsigned depth) const;
   void dump() const;
@@ -227,7 +227,6 @@ private:
 
   void initialize();
 
-  // 
   void consolidateXRegionForEdgeSet(unsigned edgeSet);
 
   // the pass to analyze a single basicblock
@@ -248,6 +247,9 @@ private:
 
   // return numbers of uses of a register.
   unsigned getRegNumUses(unsigned reg) const;
+
+  void SwapRegToTop(unsigned reg, MachineInstr &MI);
+  void DupRegToTop(unsigned reg, MachineInstr &MI);
 
   // helper function:
   void assignRegister(unsigned reg, StackRegion region);

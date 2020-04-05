@@ -63,13 +63,14 @@ void EVMStackStatus::dup(unsigned depth) {
   stackElements.push_back(elem);
 }
 
-void EVMStackStatus::pop() {
+unsigned EVMStackStatus::pop() {
+  unsigned reg = stackElements.back();
   LLVM_DEBUG({
-    unsigned reg = stackElements.back();
     unsigned idx = Register::virtReg2Index(reg);
     dbgs() << "    Popping %" << idx << " from stack.\n";
   });
   stackElements.pop_back();
+  return reg;
 }
 
 void EVMStackStatus::push(unsigned reg) {
@@ -100,10 +101,12 @@ unsigned EVMStackStatus::findRegDepth(unsigned reg) const {
   for (unsigned d = 0; d < curHeight; ++d) {
     unsigned stackReg = get(d);
     if (stackReg == reg) {
+      /*
       LLVM_DEBUG({
         dbgs() << "    Found %" << Register::virtReg2Index(reg)
                << " at depth: " << d << "\n";
       });
+      */
       return d;
     }
   }
@@ -686,12 +689,15 @@ void EVMStackAlloc::handleUses(MachineInstr &MI) {
       // handle default operands
       assert(useTypes.size() > 2);
       handleArbitraryOpcode(useTypes, MI);
+      LLVM_DEBUG(dbgs() << "    Stack status at call:"; stack.dump());
       break;
     }
   }
 
   for (unsigned i = 0; i < numUses; ++i) {
-    stack.pop();
+    unsigned reg = stack.pop();
+    // TODO: check the reg is conformant to use
+    assert(reg == useTypes[i].second.reg);
   }
 
 }
@@ -1050,50 +1056,58 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
   StackAssignment SA2 = getStackAssignment(reg2);
 
   if (SA1.region == NONSTACK && SA2.region == NONSTACK) {
+    LLVM_DEBUG({
+      dbgs() << "    Case 1 (reg1, reg2 on memory)\n";
+    });
     insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
     insertLoadFromMemoryBefore(reg1, MI, SA1.slot);
   }
 
   if (SA1.region == NONSTACK && SA2.region != NONSTACK) {
     assert(SA2.region != NO_ALLOCATION);
+    LLVM_DEBUG({
+      dbgs() << "    Case 2 (reg2 on stack)\n";
+    });
 
-    unsigned depth = stack.findRegDepth(reg2);
     if (regIsLastUse(MOP2)) {
-      if (depth != 0) {
-        // brings r2 to stack top
-        insertSwapBefore(depth, MI);
-      }
+      SwapRegToTop(reg2, MI);
     } else {
-      insertDupBefore(depth + 1, MI);
+      DupRegToTop(reg2, MI);
     }
     insertLoadFromMemoryBefore(reg1, MI, SA1.slot);
   }
 
+  // r1 on stack, r2 not on stack
   if (SA1.region != NONSTACK && SA2.region == NONSTACK) {
     assert(SA1.region != NO_ALLOCATION);
+    LLVM_DEBUG({
+      dbgs() << "    Case 3 (reg1 on stack)\n";
+    });
 
     if (regIsLastUse(MOP1)) {
-      unsigned depth = stack.findRegDepth(reg1);
       // depth == 0:
       // r1, xx, xx --load-> r2, r1, xx --> swap1 --> r1, r2, xx
       // depth != 0:
       // xx, r1, xx -swap-> r1, xx, xx -load-> r2, r1, xx -swap1-> r1, r2, xx
 
-      if (depth != 0) {
-        insertSwapBefore(depth, MI);
-      }
+      SwapRegToTop(reg1, MI);
       insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
-      insertSwapBefore(1, MI);
+      SwapRegToTop(reg1, MI);
     } else {
+      //r1 is not the first use:
+      // xx --> r2, xx --> r1, r2, xx
       insertLoadFromMemoryBefore(reg2, MI, SA2.slot);
-      unsigned depth = stack.findRegDepth(reg1);
-      insertDupBefore(depth + 1, MI);
+      DupRegToTop(reg1, MI);
     }
   }
 
   if (SA1.region != NONSTACK && SA2.region != NONSTACK) {
     assert(SA1.region != NO_ALLOCATION);
     assert(SA2.region != NO_ALLOCATION);
+
+    LLVM_DEBUG({
+      dbgs() << "    Case 4 (reg1, reg2 on stack) ";
+    });
 
     unsigned depth1 = stack.findRegDepth(reg1);
     unsigned depth2 = stack.findRegDepth(reg2);
@@ -1103,82 +1117,99 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
 
     if (lastUse1 && lastUse2) {
       // all last uses
+      LLVM_DEBUG({ dbgs() << "(last use: 1, 2), "; });
       if (depth1 == 0 && depth2 == 1) {
         // do nothing
+        LLVM_DEBUG({ dbgs() << " (Do nothing)\n"; });
       } else if (depth1 == 0 && depth2 != 1) {
+        LLVM_DEBUG({ dbgs() << " (reg2 not in place)\n"; });
         // r2 is not in place:
-        // A,X,B -S1-> X,A,B -S(depth2)-> B,A,X -S1-> A,B,X
+        // r1,X,r2 -S1-> X,r1,r2 -S(depth2)-> r2,r1,X -S1-> r1,r2,X
+        assert(depth2 >= 2);
         insertSwapBefore(1, MI);
-        insertSwapBefore(depth2, MI);
-        insertSwapBefore(1, MI);
+        SwapRegToTop(reg2, MI);
+        SwapRegToTop(reg1, MI);
       } else if (depth1 != 0 && depth2 == 1) {
-        insertSwapBefore(depth1, MI);
+        LLVM_DEBUG({ dbgs() << " (reg1 not in place)\n"; });
+        SwapRegToTop(reg1, MI);
       } else if (depth1 != 0 && depth2 != 1) {
         if (depth1 == 1 && depth2 == 0) {
+          LLVM_DEBUG({ dbgs() << " (reg1, reg2 reversed)\n"; });
           insertSwapBefore(1, MI);
         } else {
-          insertSwapBefore(depth2, MI);
+          LLVM_DEBUG({ dbgs() << " (neither reg1, reg2 in place)\n"; });
+          SwapRegToTop(reg2, MI);
           insertSwapBefore(1, MI);
-          depth1 = stack.findRegDepth(reg1);
-          insertSwapBefore(depth1, MI);
+          SwapRegToTop(reg1, MI);
         }
       }
     }
     
     //  SWAP for reg1, DUP for reg2
     if (lastUse1 && !lastUse2) {
+      LLVM_DEBUG({ dbgs() << "(last use: 1), "; });
       if (depth1 == 0 && depth2 == 1) {
+        LLVM_DEBUG({ dbgs() << "(1, 2 in place)\n"; });
         // keep reg2 while consume depth1
-        insertDupBefore(2, MI);
-        insertSwapBefore(1, MI);
+        DupRegToTop(reg2, MI);
+        SwapRegToTop(reg1, MI);
       } else if (depth1 == 0 && depth2 != 1) {
+        LLVM_DEBUG({ dbgs() << "(1 in place)\n"; });
         // r2 is not in place
-        insertDupBefore(depth2 + 1, MI);
-        depth1 = stack.findRegDepth(reg1);
-        insertSwapBefore(1, MI);
+        DupRegToTop(reg2, MI);
+        SwapRegToTop(reg1, MI);
       } else if (depth1 != 0 && depth2 == 1) {
-        insertSwapBefore(depth1, MI);
+        LLVM_DEBUG({ dbgs() << "(2 in place)\n"; });
+        SwapRegToTop(reg1, MI);
       } else if (depth1 != 0 && depth2 != 1) {
-        insertDupBefore(depth2 + 1, MI);
+        LLVM_DEBUG({ dbgs() << "(no in place)\n"; });
+        DupRegToTop(reg2, MI);
         insertSwapBefore(1, MI);
-        depth1 = stack.findRegDepth(reg1);
-        insertSwapBefore(depth1, MI);
+        SwapRegToTop(reg1, MI);
       }
     }
 
     // DUP for reg1, SWAP for reg2
     if (!lastUse1 && lastUse2) {
+      LLVM_DEBUG({ dbgs() << "(last use: 2), "; });
       if (depth1 == 0 && depth2 == 1) {
-        insertSwapBefore(1, MI);
-        insertDupBefore(2, MI);
+        LLVM_DEBUG({ dbgs() << "(1, 2 swapped)\n"; });
       } else if (depth1 == 0 && depth2 != 1) {
         // r2 is not in place
         // r1, x, r2 -S-> r2, r1, x -D-> r1, r2, r1, x
-        insertSwapBefore(depth2, MI);
-        insertDupBefore(1, MI);
+        LLVM_DEBUG({ dbgs() << "(1 in place)\n"; });
       } else if (depth1 != 0 && depth2 == 1) {
+        LLVM_DEBUG({ dbgs() << "(2 in place)\n"; });
         // r1 is not in place
         // xx, r2, r1 -S-> r2, xx, r1 -D-> r1,r2, xx, r1
-        insertSwapBefore(depth2, MI);
-        depth1 = stack.findRegDepth(reg1);
-        insertDupBefore(depth1 + 1, MI);
       } else if (depth1 != 0 && depth2 != 1) {
-        if (depth2 != 0) {
-          insertSwapBefore(depth1, MI);
-        }
+        LLVM_DEBUG({ dbgs() << "(no in place)\n"; });
         // now reg2 is at top
-        depth1 = stack.findRegDepth(reg1);
-        insertDupBefore(depth1 + 1, MI);
       }
+      SwapRegToTop(reg2, MI);
+      DupRegToTop(reg1, MI);
     }
 
     if (!lastUse1 && !lastUse2) {
-      insertDupBefore(depth2 + 1, MI);
-      depth1 = stack.findRegDepth(reg1);
-      insertDupBefore(depth1 + 1, MI);
+      LLVM_DEBUG({ dbgs() << "(last use: no), "; });
+      DupRegToTop(reg2, MI);
+      DupRegToTop(reg1, MI);
     }
   }
 }
+
+void EVMStackAlloc::SwapRegToTop(unsigned reg, MachineInstr &MI) {
+  unsigned depth = stack.findRegDepth(reg);
+  if (depth != 0) {
+    insertSwapBefore(depth, MI);
+  }
+}
+
+void EVMStackAlloc::DupRegToTop(unsigned reg, MachineInstr &MI) {
+  unsigned depth = stack.findRegDepth(reg);
+  insertDupBefore(depth + 1, MI);
+}
+
 void EVMStackAlloc::handleArbitraryOpcode(std::vector<MOPUseType> useTypes,
                                           MachineInstr &MI) {
   // This is very tricky. 
