@@ -229,6 +229,11 @@ private:
 
   void consolidateXRegionForEdgeSet(unsigned edgeSet);
 
+  bool rangeContainsRegUses(unsigned reg, SlotIndex &begin,
+                            SlotIndex &end) const;
+  bool sucessorsContainRegUses(unsigned reg,
+                               const MachineBasicBlock *MBB) const;
+
   // the pass to analyze a single basicblock
   void analyzeBasicBlock(MachineBasicBlock *MBB);
 
@@ -263,6 +268,8 @@ private:
 
   bool hasUsesAfterInSameBB(unsigned reg, const MachineInstr &MI) const;
   bool successorsHaveUses(unsigned useReg, const MachineInstr &MI) const;
+
+  bool regIsDeadAtBeginningOfMBB(unsigned reg, const MachineBasicBlock *MBB) const;
 
   // test if we should spill some registers to memory
   unsigned getCurrentStackDepth() const; 

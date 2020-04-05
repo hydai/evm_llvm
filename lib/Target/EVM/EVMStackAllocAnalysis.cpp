@@ -340,6 +340,36 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
   
   // also initialize the memory slots;
   memoryAssignment = memslots;
+
+  // Now pop those dead x registers.
+  MachineInstr &MI = *MBB->begin();
+  for (unsigned i = 0; i < xStack.size(); ++i) {
+    unsigned xreg = xStack[i];
+    if (regIsDeadAtBeginningOfMBB(xreg, MBB)) {
+      LLVM_DEBUG({
+        dbgs() << "  %" << Register::virtReg2Index(xreg)
+               << " is dead, popping:\n";
+      });
+      SwapRegToTop(xreg, MI);
+      insertPopBefore(MI);
+      stack.popElementFromXRegion();
+    }
+  }
+}
+
+bool EVMStackAlloc::regIsDeadAtBeginningOfMBB(
+    unsigned reg, const MachineBasicBlock *MBB) const {
+  // First, check if MBB has use of reg.
+  SlotIndex BBStartSlot = LIS->getMBBStartIdx(MBB);
+  SlotIndex BBEndSlot = LIS->getMBBEndIdx(MBB);
+
+  if (rangeContainsRegUses(reg, BBStartSlot, BBEndSlot)) {
+    return false;
+  }
+  if (sucessorsContainRegUses(reg, MBB)) {
+    return false;
+  }
+  return true;
 }
 
 void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
@@ -375,6 +405,10 @@ void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
 
 void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
   LLVM_DEBUG({ dbgs() << "  Analyzing MBB" << MBB->getNumber() << ":\n"; });
+
+  MachineInstr &BeginMI = *MBB->begin();
+
+  // this will alter MBB, so we record begin MI instruction
   beginOfBlockUpdates(MBB);
 
   LLVM_DEBUG({
@@ -382,10 +416,10 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
     stack.dump();
   });
   
-  for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;) {
+  for (MachineBasicBlock::iterator I(BeginMI), E = MBB->end(); I != E;) {
     MachineInstr &MI = *I++;
 
-    LLVM_DEBUG({ dbgs() << "  Instr: "; MI.dump();});
+    LLVM_DEBUG({ dbgs() << "\n  Instr: "; MI.dump();});
 
     // First consume, then create
     handleUses(MI);
@@ -458,7 +492,36 @@ static bool hasOneUse(unsigned Reg, const MachineInstr *Def, MachineRegisterInfo
   */
 }
 
+bool EVMStackAlloc::rangeContainsRegUses(unsigned reg,
+                                         SlotIndex &beginSlot,
+                                         SlotIndex &endSlot) const {
+  for (auto &Use : MRI->use_nodbg_operands(reg)) {
+    MachineInstr * UseMI = Use.getParent();
+    SlotIndex UseSlot = LIS->getInstructionIndex(*UseMI).getRegSlot();
 
+    // check if the same BB has subsequent uses.
+    if (SlotIndex::isEarlierInstr(beginSlot, UseSlot) &&
+        SlotIndex::isEarlierInstr(UseSlot, endSlot)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool EVMStackAlloc::sucessorsContainRegUses(unsigned reg,
+                                            const MachineBasicBlock *MBB) const {
+  for (auto &Use : MRI->use_nodbg_operands(reg)) {
+    MachineInstr * UseMI = Use.getParent();
+    SlotIndex UseSlot = LIS->getInstructionIndex(*UseMI).getRegSlot();
+    for (auto SuccMBB : MBB->successors()) {
+      SlotIndex SuccBegin = LIS->getMBBStartIdx(SuccMBB);
+      if (SlotIndex::isEarlierInstr(SuccBegin, UseSlot)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 // return true of the register use in the machine instruction is the last use.
 bool EVMStackAlloc::regIsLastUse(const MachineOperand &MOP) const {
@@ -473,25 +536,15 @@ bool EVMStackAlloc::regIsLastUse(const MachineOperand &MOP) const {
   const MachineBasicBlock *MBB = MI->getParent();
   SlotIndex MISlot = LIS->getInstructionIndex(*MI).getRegSlot();
   SlotIndex BBEndSlot = LIS->getMBBEndIdx(MBB);
-  for (auto &Use : MRI->use_nodbg_operands(reg)) {
-    MachineInstr * UseMI = Use.getParent();
-    SlotIndex UseSlot = LIS->getInstructionIndex(*UseMI).getRegSlot();
 
-
-    // check if the same BB has subsequent uses.
-    if (SlotIndex::isEarlierInstr(MISlot, UseSlot) &&
-        SlotIndex::isEarlierInstr(UseSlot, BBEndSlot)) {
-      return false;
-    }
-
-    // check if all sucessors have not uses
-    for (auto SuccMBB : MBB->successors()) {
-      SlotIndex SuccBegin = LIS->getMBBStartIdx(SuccMBB);
-      if (SlotIndex::isEarlierInstr(SuccBegin, UseSlot)) {
-        return false;
-      }
-    }
+  if (rangeContainsRegUses(reg, MISlot, BBEndSlot)) {
+    return false;
   }
+
+  if (sucessorsContainRegUses(reg, MBB)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -1191,7 +1244,7 @@ void EVMStackAlloc::handleBinaryOpcode(EVMStackAlloc::MOPUseType op1, MOPUseType
     }
 
     if (!lastUse1 && !lastUse2) {
-      LLVM_DEBUG({ dbgs() << "(last use: no), "; });
+      LLVM_DEBUG({ dbgs() << "(last use: no)\n"; });
       DupRegToTop(reg2, MI);
       DupRegToTop(reg1, MI);
     }
