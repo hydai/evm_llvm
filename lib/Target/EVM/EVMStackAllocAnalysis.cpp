@@ -84,14 +84,14 @@ void EVMStackStatus::push(unsigned reg) {
 
 void EVMStackStatus::dump() const {
   LLVM_DEBUG({
-    dbgs() << "  Stack :  x size: " << getSizeOfXRegion() << ". ";
+    dbgs() << "  Stack : (";
     unsigned counter = 0;
     for (auto i = stackElements.rbegin(), e = stackElements.rend(); i != e; ++i) {
       unsigned idx = Register::virtReg2Index(*i);
-      dbgs() << "(" << counter << ", %" << idx << "), ";
+      dbgs() << "%" << idx << ", ";
       counter ++;
     }
-    dbgs() << "\n";
+    dbgs() << ")\n";
   });
 }
 
@@ -355,6 +355,24 @@ void EVMStackAlloc::beginOfBlockUpdates(MachineBasicBlock *MBB) {
       stack.popElementFromXRegion();
     }
   }
+
+  // Now free up memory slots if its occupant is out of range
+  SlotIndex MBBBeginSlot = LIS->getMBBStartIdx(MBB);
+  for (size_t i = 0; i < memoryAssignment.size(); ++i) {
+    unsigned reg = memoryAssignment[i];
+    if (reg == 0) {
+      continue;
+    }
+    const LiveInterval &LI = LIS->getInterval(reg);
+    if (!LI.liveAt(MBBBeginSlot)) {
+      LLVM_DEBUG({
+        dbgs() << "  Memslot: free up %" << Register::virtReg2Index(reg)
+               << "\n";
+      });
+      deallocateMemorySlot(reg);
+      currentStackStatus.X.erase(reg);
+    }
+  }
 }
 
 bool EVMStackAlloc::regIsDeadAtBeginningOfMBB(
@@ -372,13 +390,40 @@ bool EVMStackAlloc::regIsDeadAtBeginningOfMBB(
   return true;
 }
 
+void EVMStackAlloc::dumpMemoryStatus() const {
+  LLVM_DEBUG({
+    dbgs() << "  Memory status: ";
+    for (size_t i = 0; i < memoryAssignment.size(); ++i) {
+      unsigned reg = memoryAssignment[i];
+      dbgs() << "(" << i << ", ";
+      if (reg == 0) {
+        dbgs() << "empty";
+      } else {
+        dbgs() << "%" << Register::virtReg2Index(reg);
+      }
+      dbgs() << "), ";
+    }
+    dbgs() << "\n";
+  });
+}
+
 void EVMStackAlloc::endOfBlockUpdates(MachineBasicBlock *MBB) {
   // make sure the reg is in X region.
   assert(stack.getStackDepth() == stack.getSizeOfXRegion() &&
          "L Region elements are still on the stack at end of MBB.");
 
-  std::vector<unsigned> xStack(stack.getStackElements());
+  // make sure all the X registers are live at thend of MBB.
+  LLVM_DEBUG({
+    for (size_t i = 0; i < stack.getStackDepth(); ++i) {
+      unsigned reg = stack.get(i);
+      assert(sucessorsContainRegUses(reg, MBB));
+    }
+    // print out memory assignments
+    dumpMemoryStatus();
+  });
 
+
+  std::vector<unsigned> xStack(stack.getStackElements());
   for (MachineBasicBlock *NextMBB : MBB->successors()) {
     unsigned edgeSetIndex = edgeSets.getEdgeSetIndex({MBB, NextMBB});
 
@@ -415,6 +460,7 @@ void EVMStackAlloc::analyzeBasicBlock(MachineBasicBlock *MBB) {
     dbgs() << "    X Stack dump: (size: " << stack.getStackDepth() << ") \n";
     stack.dump();
   });
+  dumpMemoryStatus();
   
   for (MachineBasicBlock::iterator I(BeginMI), E = MBB->end(); I != E;) {
     MachineInstr &MI = *I++;
@@ -840,10 +886,7 @@ bool EVMStackAlloc::handleSingleUse(MachineInstr &MI, const MachineOperand &MOP,
   if (regIsLastUse(MOP)) {
     switch (SA.region) {
       case NONSTACK: {
-        // release memory slot
         insertLoadFromMemoryBefore(useReg, MI, SA.slot);
-        currentStackStatus.M.erase(useReg);
-        deallocateMemorySlot(useReg);
         break;
       }
       case X_STACK: {
@@ -921,6 +964,10 @@ void EVMStackAlloc::deallocateMemorySlot(unsigned reg) {
       memoryAssignment[i] = 0;
       LLVM_DEBUG(dbgs() << "    deallocate %" << Register::virtReg2Index(reg)
                         << " at memslot: " << i << "\n");
+      while (memoryAssignment.size() > 0 &&
+             memoryAssignment.back() == 0) {
+        memoryAssignment.pop_back();
+      }
       return;
     }
   }
@@ -1056,12 +1103,7 @@ void EVMStackAlloc::handleOperandLiveness(RegUseType useType, MachineOperand &MO
   StackAssignment SA = getStackAssignment(reg);
 
   if (regIsLastUse(MOP)) {
-    // when it goes out of liveness range, free resources if it is on memory or
-    // X region.
-    if (SA.region == NONSTACK) {
-      currentStackStatus.M.erase(reg);
-      deallocateMemorySlot(reg);
-    }
+    // when it goes out of liveness range, free resources if it is on X region.
     if (SA.region == X_STACK) {
       currentStackStatus.X.erase(reg);
       stack.popElementFromXRegion();

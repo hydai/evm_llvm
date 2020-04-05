@@ -225,14 +225,15 @@ private:
 
   EVMMachineFunctionInfo *MFI;
 
+  void dumpMemoryStatus() const;
+
   void initialize();
 
   void consolidateXRegionForEdgeSet(unsigned edgeSet);
 
   bool rangeContainsRegUses(unsigned reg, SlotIndex &begin,
                             SlotIndex &end) const;
-  bool sucessorsContainRegUses(unsigned reg,
-                               const MachineBasicBlock *MBB) const;
+  bool sucessorsContainRegUses(unsigned reg, const MachineBasicBlock *MBB) const;
 
   // the pass to analyze a single basicblock
   void analyzeBasicBlock(MachineBasicBlock *MBB);
