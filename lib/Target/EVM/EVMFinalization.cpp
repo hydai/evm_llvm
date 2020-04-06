@@ -60,9 +60,11 @@ bool EVMFinalization::shouldInsertJUMPDEST(MachineBasicBlock &MBB) const {
     return false;
   }
 
-  // Entry MBB needs a basic block.
-  if (&MBB == &MBB.getParent()->front()) {
-    return true;
+  if (this->ST->hasSubroutine()) {
+    // Entry MBB needs a basic block.
+    if (&MBB == &MBB.getParent()->front()) {
+      return false;
+    }
   }
 
   // for now we will add a JUMPDEST anyway.
@@ -109,7 +111,11 @@ bool EVMFinalization::runOnMachineFunction(MachineFunction &MF) {
   this->ST = &MF.getSubtarget<EVMSubtarget>();
   this->TII = ST->getInstrInfo();
 
-  bool Changed = false;
+  if (this->ST->hasSubroutine()) {
+    MachineBasicBlock& MBB = MF.front();
+    MachineBasicBlock::iterator begin = MBB.begin();
+    BuildMI(MBB, begin, begin->getDebugLoc(), TII->get(EVM::BEGINSUB));
+  }
 
   for (MachineBasicBlock & MBB : MF) {
     // Insert JUMPDEST at the beginning of the MBB is necessary
@@ -131,14 +137,12 @@ bool EVMFinalization::runOnMachineFunction(MachineFunction &MF) {
       // Remove pseudo instruction
       if (opcode == EVM::pSTACKARG) {
         MI->eraseFromParent();
-        Changed = true;
       }
       
-      if (opcode == EVM::pRETURNSUB) {
+      if (opcode == EVM::pRETURNSUB_r) {
         // convert it to
         // JUMP
-        MI->setDesc(TII->get(EVM::JUMP));
-        Changed = true;
+        MI->setDesc(TII->get(EVM::RETURNSUB));
       }
 
       // TODO: add stack-version of these 2 pseudos
@@ -150,5 +154,5 @@ bool EVMFinalization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-  return Changed;
+  return true;
 }

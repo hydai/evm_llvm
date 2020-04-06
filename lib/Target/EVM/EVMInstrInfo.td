@@ -12,6 +12,8 @@
 
 include "EVMInstrFormats.td"
 
+def HasSubroutine : Predicate<"Subtarget->hasSubroutine()">;
+
 def getStackOpcode : InstrMapping {
   let FilterClass = "StackRel";
   let RowFields = ["BaseName"];
@@ -442,15 +444,16 @@ def DUP14: EVMInst<(outs), (ins), [], "true", "DUP14", 0x8d, 3>;
 def DUP15: EVMInst<(outs), (ins), [], "true", "DUP15", 0x8e, 3>;
 def DUP16: EVMInst<(outs), (ins), [], "true", "DUP16", 0x8f, 3>;
 
-let isBranch = 1, isBarrier = 1, isTerminator = 1 in {
-defm JUMPTO : Inst_1_0<"JUMPTO", [], 0xb0, 8>;
-/*
-defm JUMPIF : // TODO: argument type is 4 bytes.
-    : RSInst<(outs GPR:$dst), (ins GPR:$src1, GPR:$src2),
-             pattern,
-             "JUMPIF\t$dst, $src1, $src2", "JUMPIF", 0xb1, 10>;
-*/
+let isBranch = 1, isTerminator = 1, isCall = 1 in {
+defm JUMPSUB : RSInst<(outs), (ins GPR:$dst), [],
+                   "JUMPSUB_r \t$dst", "JUMPSUB", 0xb3, 8>,
+                Requires<[HasSubroutine]>;
 }
+
+defm BEGINSUB  : Inst_0_0<"BEGINSUB",  [], 0xb5, 1>,
+                  Requires<[HasSubroutine]>;
+defm RETURNSUB : Inst_0_0<"RETURNSUB", [], 0xb7, 2>,
+                  Requires<[HasSubroutine]>;
 
 let mayStore = 1, hasSideEffects = 1 in {
 defm CREATE : Inst_3_1<"CREATE",
@@ -555,13 +558,17 @@ let isTerminator = 1, isBarrier = 1, isBranch = 1 in {
                 [(EVMRetflag i256:$src)]>;
     def pRETURNSUBVOID_TEMP_r :
       EVMPseudo<(outs), (ins), [(EVMRetflag)]>;
-    def pRETURNSUB:
+
+    // the version without return address attached
+    def pRETURNSUB_r:
       EVMPseudo<(outs), (ins), []>;
+    def pRETURNSUBVOID_r:
+      EVMPseudo<(outs), (ins GPR:$rv), []>;
 
     // the version with return address embedded
-    def pRETURNSUB_r  :
+    def pRETURNSUBTO_r  :
       EVMPseudo<(outs), (ins GPR:$ret, GPR:$src), []>;
-    def pRETURNSUBVOID_r :
+    def pRETURNSUBVOIDTO_r :
       EVMPseudo<(outs), (ins GPR:$ret), []>;
   }
 }

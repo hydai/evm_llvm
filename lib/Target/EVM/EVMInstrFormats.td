@@ -6,9 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-//def HasEIP211 : Predicate<"!Subtarget->hasEIP211()">;
-//def HasEIP615 : Predicate<"!Subtarget->hasEIP615()">;
-
 def I256Imm : Operand<i256> {
   // TODO: implement Imm256 print
   //let PrintMethod = "printImm256Operand";

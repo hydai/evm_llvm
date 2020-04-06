@@ -210,14 +210,7 @@ bool EVMExpandPseudos::runOnMachineFunction(MachineFunction &MF) {
           expandJUMP(MI);
           Changed = true;
           break;
-        // suspend it and expand at finalization time
-        //case EVM::pRETURNSUB_r:
-        //case EVM::pRETURNSUBVOID_r:
-        //  expandRETURN(MI);
-        //  Changed = true;
-        //  break;
       }
-
     }
   }
 

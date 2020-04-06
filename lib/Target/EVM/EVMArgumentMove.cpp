@@ -71,15 +71,13 @@ void EVMArgumentMove::arrangeStackArgs(MachineFunction& MF) const {
   EVMMachineFunctionInfo *MFI = MF.getInfo<EVMMachineFunctionInfo>();
   MachineRegisterInfo &MRI = MF.getRegInfo();
 
+  const Function &F = MF.getFunction();
+  bool shouldPushRetAddr = !EVMSubtarget::isMainFunction(F) &&
+                           !MF.getSubtarget<EVMSubtarget>().hasSubroutine();
+
   // we plus one so that the return address is included
-  unsigned stackArgOffset = 1;
-  {
-    // 
-    const Function &F = MF.getFunction();
-    if (EVMSubtarget::isMainFunction(F)) {
-      stackArgOffset = 0;
-    }
-  }
+  unsigned stackArgOffset = shouldPushRetAddr ? 1 : 0;
+
   BitVector stackargs(MFI->getNumStackArgs() + stackArgOffset, false);
 
   MachineBasicBlock &EntryMBB = MF.front();
@@ -117,52 +115,61 @@ void EVMArgumentMove::arrangeStackArgs(MachineFunction& MF) const {
     }
   }
 
-  const Function &F = MF.getFunction();
 
-  // we now insert a special return address stack argument to the beginning of
-  // the function:
-  if (!EVMSubtarget::isMainFunction(F)) {
-      // return address is the last stackarg:
-      unsigned retAddrStackArgNum = MFI->getNumStackArgs();
-      unsigned destReg = MRI.createVirtualRegister(&EVM::GPRRegClass);
-      auto bmi =
-          BuildMI(EntryMBB, EntryMBB.front(), EntryMBB.front().getDebugLoc(),
-                  TII->get(EVM::pSTACKARG_r), destReg)
-              .addImm(retAddrStackArgNum);
-      returnAddrReg = destReg;
+  if (shouldPushRetAddr) {
+    // we now insert a special return address stack argument to the beginning of
+    // the function:
+    // return address is the last stackarg:
+    unsigned retAddrStackArgNum = MFI->getNumStackArgs();
+    unsigned destReg = MRI.createVirtualRegister(&EVM::GPRRegClass);
+    auto bmi =
+        BuildMI(EntryMBB, EntryMBB.front(), EntryMBB.front().getDebugLoc(),
+                TII->get(EVM::pSTACKARG_r), destReg)
+            .addImm(retAddrStackArgNum);
+    returnAddrReg = destReg;
 
-      LLVM_DEBUG({
-        dbgs() << "Creating return address STACKARG: "; bmi->dump();
-      });
-  }
+    LLVM_DEBUG({
+      dbgs() << "Creating return address STACKARG: ";
+      bmi->dump();
+    });
 
-  // we have found the return address, convert the RETURN sub:
-  for (MachineBasicBlock &MBB : MF) {
-    for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end(); I != E;) {
-      MachineInstr &MI = *I++;
-      if (MI.getOpcode() == EVM::pRETURNSUB_TEMP_r) {
-        auto mibuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                TII->get(EVM::pRETURNSUB_r));
+    // we have found the return address, convert the RETURN sub:
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end();
+           I != E;) {
+        MachineInstr &MI = *I++;
+        if (MI.getOpcode() == EVM::pRETURNSUB_TEMP_r) {
+          auto mibuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                                   TII->get(EVM::pRETURNSUBTO_r));
 
-        // TODO: this might change
-        if (!EVMSubtarget::isMainFunction(F)) {
-            mibuilder.addReg(returnAddrReg);
+          mibuilder.addReg(MI.getOperand(0).getReg());
+          MI.eraseFromParent();
         }
-
-        mibuilder.addReg(MI.getOperand(0).getReg());
-        MI.eraseFromParent();
-      }
-      if (MI.getOpcode() == EVM::pRETURNSUBVOID_TEMP_r) {
-        auto mibuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                TII->get(EVM::pRETURNSUBVOID_r));
-
-        if (!EVMSubtarget::isMainFunction(F)) {
-            mibuilder.addReg(returnAddrReg);
+        if (MI.getOpcode() == EVM::pRETURNSUBVOID_TEMP_r) {
+          BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                  TII->get(EVM::pRETURNSUBVOIDTO_r));
+          MI.eraseFromParent();
         }
-
-        MI.eraseFromParent();
       }
     }
+  } else {
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end();
+           I != E;) {
+        MachineInstr &MI = *I++;
+        if (MI.getOpcode() == EVM::pRETURNSUB_TEMP_r) {
+          auto mibuilder = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                                   TII->get(EVM::pRETURNSUB_r));
+          MI.eraseFromParent();
+        }
+        if (MI.getOpcode() == EVM::pRETURNSUBVOID_TEMP_r) {
+          BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                  TII->get(EVM::pRETURNSUBVOID_r));
+          MI.eraseFromParent();
+        }
+      }
+    }
+
   }
 }
 

@@ -29,15 +29,13 @@ namespace llvm {
 class StringRef;
 
 class EVMSubtarget : public EVMGenSubtargetInfo {
+public:
+  bool hasSubroutine() const { return has_subroutines; }
+
+private:
   virtual void anchor();
 
-  // EVM Change
-  bool HasEIP211 = false;
-  bool HasEIP615 = false;
-
-  bool hasEIP211() const { return HasEIP211; }
-  bool hasEIP615() const { return HasEIP615; }
-  // end of EVM Change
+  bool has_subroutines = true;
 
   EVMFrameLowering FrameLowering;
   EVMInstrInfo InstrInfo;

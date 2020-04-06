@@ -204,105 +204,130 @@ bool EVMConvertRegToStack::runOnMachineFunction(MachineFunction &MF) {
           // it at the finalization pass.
           if (RegOpcode == EVM::pRETURNSUB_r ||
               RegOpcode == EVM::pRETURNSUBVOID_r) {
-            StackOpcode = EVM::JUMP;
+            if (MF.getSubtarget<EVMSubtarget>().hasSubroutine()) {
+              StackOpcode = EVM::RETURNSUB;
+            } else {
+              StackOpcode = EVM::JUMP;
+            }
           }
 
           else if (RegOpcode == EVM::pJUMPSUB_r || EVM::pJUMPSUBVOID_r) {
-            // store FreeMemory Pointer to latest location:
+            if (MF.getSubtarget<EVMSubtarget>().hasSubroutine()) {
+              StackOpcode = EVM::JUMPSUB;
+            } else {
+              // store FreeMemory Pointer to latest location:
 
-            EVMMachineFunctionInfo *MFI = MF.getInfo<EVMMachineFunctionInfo>();
+              EVMMachineFunctionInfo *MFI =
+                  MF.getInfo<EVMMachineFunctionInfo>();
 
-            // we implicitly allocate a slot at FP[lastIndex+1]:
-            unsigned index = MFI->getNumAllocatedIndexInFunction() + 1;
+              // we implicitly allocate a slot at FP[lastIndex+1]:
+              unsigned index = MFI->getNumAllocatedIndexInFunction() + 1;
 
-            // store current FP to fp[index]:
-            // TODO can optimize this sequence
+              // store current FP to fp[index]:
+              // TODO can optimize this sequence
 
-            // PUSH fpaddr
-            // MLOAD  (fp)
-            // DUP1 (fp, fp)
-            // PUSH index (index, fp, fp)
-            // ADD   (fp+index, fp)
-            // MSTORE                 
+              // PUSH fpaddr
+              // MLOAD  (fp)
+              // DUP1 (fp, fp)
+              // PUSH index (index, fp, fp)
+              // ADD   (fp+index, fp)
+              // MSTORE
 
-            // update FP to FP[index + 1]
+              // update FP to FP[index + 1]
 
-            // PUSH fpaddr (fpaddr)
-            // MLOAD (fp)
-            // PUSH (index + 1) * 32     (index+1, fp)
-            // ADD   (fp[index+1])
-            // PUSH fpaddr   (fpaddr, fp[index+1])
-            // MSTORE
+              // PUSH fpaddr (fpaddr)
+              // MLOAD (fp)
+              // PUSH (index + 1) * 32     (index+1, fp)
+              // ADD   (fp[index+1])
+              // PUSH fpaddr   (fpaddr, fp[index+1])
+              // MSTORE
 
-            unsigned fpaddr = MF.getSubtarget<EVMSubtarget>().getFreeMemoryPointer();
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                    TII->get(EVM::PUSH32))
-                .addImm(fpaddr);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::MLOAD));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::DUP1));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                    TII->get(EVM::PUSH32))
-                .addImm(index * 32);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::ADD));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::MSTORE));
+              unsigned fpaddr =
+                  MF.getSubtarget<EVMSubtarget>().getFreeMemoryPointer();
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH32))
+                  .addImm(fpaddr);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::MLOAD));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::DUP1));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH32))
+                  .addImm(index * 32);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::ADD));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::MSTORE));
 
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH32))
+                  .addImm(fpaddr);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::MLOAD));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH32))
+                  .addImm((index + 1) * 32);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::ADD));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH32))
+                  .addImm(fpaddr);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::MSTORE));
 
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                    TII->get(EVM::PUSH32))
-                .addImm(fpaddr);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::MLOAD));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                    TII->get(EVM::PUSH32))
-                .addImm((index + 1) * 32);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::ADD));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
-                    TII->get(EVM::PUSH32))
-                .addImm(fpaddr);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::MSTORE));
+              // here we build the return address, and insert it as the first
+              // argument of the function.
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::PUSH1))
+                  .addImm(4);
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::GETPC));
+              BuildMI(*MI.getParent(), MI, MI.getDebugLoc(),
+                      TII->get(EVM::ADD));
 
-            // here we build the return address, and insert it as the first argument
-            // of the function.
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::PUSH1))
-                .addImm(4);
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::GETPC));
-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(EVM::ADD));
+              // swap the callee address with the return address
+              unsigned uses = std::distance(MI.uses().begin(), MI.uses().end());
+              unsigned opc = getSWAPOpcode(uses);
+              auto mm =
+                  BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(opc));
+              // setting comment
+              mm->setAsmPrinterFlag(
+                  EVM::BuildCommentFlags(EVM::SUBROUTINE_BEGIN, 0));
+              StackOpcode = EVM::JUMP;
 
-            // swap the callee address with the return address
-            unsigned uses = std::distance(MI.uses().begin(), MI.uses().end());
-            unsigned opc = getSWAPOpcode(uses);
-            auto mm = BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), TII->get(opc));
-            // setting comment
-            mm->setAsmPrinterFlag(
-                EVM::BuildCommentFlags(EVM::SUBROUTINE_BEGIN, 0));
-            StackOpcode = EVM::JUMP;
+              MachineBasicBlock::iterator MIT(MI);
 
-            MachineBasicBlock::iterator MIT(MI);
+              // insert JUMPDEST after MI
+              const DebugLoc &DL = MI.getDebugLoc();
+              MIT = MBB.insertAfter(MIT,
+                                    BuildMI(MF, DL, TII->get(EVM::JUMPDEST)));
 
-            // insert JUMPDEST after MI
-            const DebugLoc &DL = MI.getDebugLoc();
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::JUMPDEST)));
+              // restore free pointer from index
+              // PUSH FPAddr  (fpaddr)
+              // MLOAD        (fp)
+              // PUSH 32      (32, fp)
+              // SWAP1        (fp, 32)
+              // SUB          (fp-32)
+              // MLOAD        (oldFP)
+              // PUSH FPAddr  (fpaddr, oldFP)
+              // MSTORE
 
-            // restore free pointer from index
-            // PUSH FPAddr  (fpaddr)
-            // MLOAD        (fp)
-            // PUSH 32      (32, fp)
-            // SWAP1        (fp, 32)
-            // SUB          (fp-32)
-            // MLOAD        (oldFP)
-            // PUSH FPAddr  (fpaddr, oldFP)
-            // MSTORE
+              // PUSH FPAddr  (fpadd,r fp-32)
+              // MSTORE
 
-            // PUSH FPAddr  (fpadd,r fp-32)
-            // MSTORE     
-
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(fpaddr));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MLOAD)));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(32));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::SWAP1)));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::SUB)));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MLOAD)));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(fpaddr));
-            MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MSTORE)));
+              MIT = MBB.insertAfter(
+                  MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(fpaddr));
+              MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MLOAD)));
+              MIT = MBB.insertAfter(
+                  MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(32));
+              MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::SWAP1)));
+              MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::SUB)));
+              MIT = MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MLOAD)));
+              MIT = MBB.insertAfter(
+                  MIT, BuildMI(MF, DL, TII->get(EVM::PUSH32)).addImm(fpaddr));
+              MIT =
+                  MBB.insertAfter(MIT, BuildMI(MF, DL, TII->get(EVM::MSTORE)));
+            }
           }
         }
         assert(StackOpcode != -1 && "Failed to convert instruction to stack mode.");
